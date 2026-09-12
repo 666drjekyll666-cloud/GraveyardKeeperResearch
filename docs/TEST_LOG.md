@@ -59,3 +59,13 @@ Do not record routine repository inspection as an in-game test. Do not rewrite a
 - Interpretation: recurring Day Wheel allocation pressure was causal for the rhythmic component. The remaining sporadic hitch class exists independently at the tested baseline and is not attributable to Day Wheel from this evidence.
 - Status: `root cause confirmed` for the rhythmic Day Wheel component; `rules out` Day Wheel as the sole owner of the residual random hitches.
 - Next step: investigate the remaining random hitch class cross-mod/game-wide rather than continuing to optimize Day Wheel without new evidence.
+
+### 2026-09-13 — Save Now one-minute autosave calibration
+
+- Question: can the game's save path produce a visible stall of the same broad magnitude as the reported freezes, and does Save Now's timed autosave explain the ordinary residual symptom?
+- Comparison/control: temporarily enabled Save Now debug logging and changed the autosave interval from 10 minutes to 1 minute for a short controlled run; ordinary profile state before the diagnostic change had `Auto Save = False`, `Save On New Day = False`, and `Backup Saves On Save = False`.
+- Evidence: supplied runtime log plus user observation.
+- Observed result: each forced autosave visibly froze. Three consecutive one-minute autosaves were followed by Unity unused-asset cleanups of **772.9579 ms**, **759.0385 ms**, and **769.1783 ms**, with roughly 949k–955k loaded objects and ~695–710 ms spent in `MarkObjects`. A normal sleep/save path in the same log produced another **792.6656 ms** cleanup with ~949k loaded objects.
+- Interpretation: the save path is a confirmed, highly reproducible source of ~0.75–0.8 s stalls in this installation. However the timed Save Now autosave cannot explain the original ordinary steady-state symptom because autosave was disabled in the normal configuration. The user also reports that residual freezes occur outside autosave events. Treat save-related stalls as a separate known hitch class, not the root cause of the remaining random microfreezes.
+- Status: `root cause confirmed` for save-triggered stalls; `rules out` Save Now timed autosave as the ordinary recurring trigger under the user's baseline configuration.
+- Next step: inspect recurring/high-frequency runtime paths in the remaining mod set and correlate only new candidates with the residual non-save hitch class.
