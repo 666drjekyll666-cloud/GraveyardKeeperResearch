@@ -16,8 +16,11 @@ Keep observed facts, hypotheses, root causes, and accepted results separate. Do 
 - One previously supplied runtime cleanup sample reported `Loaded Objects now: 860406` and a **611.2889 ms** total cleanup, including **558.5640 ms** in `MarkObjects`. This proves that Unity unused-asset cleanup can be large enough in this installation to produce a visible main-thread-class stall. It does not by itself prove which trigger owns every observed microfreeze.
 - In the user's ordinary Save Now configuration, `Auto Save = False`, `Save On New Day = False`, and `Backup Saves On Save = False`. Therefore timed Save Now autosaves are not part of the ordinary steady-state baseline in which the residual random microfreezes were reported.
 - A deliberate one-minute Save Now calibration reproduced three near-identical save-triggered stalls: **772.9579 ms**, **759.0385 ms**, and **769.1783 ms** Unity unused-asset cleanup, with roughly 949k–955k loaded objects and ~695–710 ms spent in `MarkObjects`. A normal sleep/save in the same run produced **792.6656 ms**. Save-triggered stalls are therefore a confirmed separate hitch class.
-- `GK Frame Spike Probe 0.1.0` directly captured a user-correlated residual gameplay freeze while mining coal as **695.26 ms wall time** with `focused=True`, `timeScale=1`, and **no managed collections** (`gc0=+0 gc1=+0 gc2=+0`). No save, `Resources.UnloadUnusedAssets`, scene load, or focus transition occurred around that spike. Therefore managed Mono GC and save/unused-asset cleanup are not necessary conditions for the residual gameplay freeze class.
-- The same 0.1.0 run also contained a separate **711.93 ms** gameplay spike with a full managed collection (`gc0=+1 gc1=+1 gc2=+1`) at ~528 MB managed heap in the house-area portion of the run. This is the strongest temporal match to the user's first reported freeze, although that first event was not timestamped exactly. Visually similar residual freezes can therefore occur both with and without a managed collection.
+- `GK Frame Spike Probe 0.1.0` directly captured a user-correlated residual gameplay freeze while mining coal as **695.26 ms wall time** with `focused=True`, `timeScale=1`, and `gc0=+0 gc1=+0 gc2=+0`. On this Unity/Mono Boehm backend those three values are the same completed-collection counter repeated, so the zero delta proves only that the Boehm collection counter did not advance during the sampled interval; it does **not** prove that no incremental GC work occurred. No save, `Resources.UnloadUnusedAssets`, scene load, or focus transition occurred around that spike.
+- The same 0.1.0 run also contained a separate **711.93 ms** gameplay spike with `gc0=+1 gc1=+1 gc2=+1` at ~528 MB managed heap in the house-area portion of the run. This confirms that at least some visually similar residual freezes coincide with a completed Boehm collection-counter advance.
+- `GK Frame Spike Probe 0.2.0` directly correlated the user's severe road freeze near Witch Hill as **692.09 ms wall / 687.50 ms Unity-main-thread CPU / 99.3% CPU share**, `timeScale=1`, `focused=True`, with `gc0/gc1/gc2=+0`. This rules out blocking, waiting, or OS descheduling as the dominant mechanism for that captured freeze; it does not rule out incremental GC work because the Boehm collection counter can remain unchanged while marking is in progress.
+- `GK Frame Spike Probe 0.3.0` confirmed Unity incremental GC is enabled in this game build (`isIncremental=True`, `GCMode=Enabled`, target slice **3,000,000 ns / 3 ms**). The user's next characteristic Witch-Hill-area freeze measured **714.88 ms wall / 703.13 ms main-thread CPU / 98.4% CPU share**, with `gc_cycle_delta=0`, managed heap **560.6 MB**, and `incremental_pending=True` immediately after the stall. Thus a live incremental GC cycle definitely spans the directly correlated stall, even though the completed-collection counter does not advance.
+- The Witch Hill `witch_hill_down_zone_big_R` entry is a reproducible temporal correlate across multiple captures, but it is **not yet a proven root cause**. At least one earlier pass through the same zone completed without the characteristic ~0.7 s spike, and the frame probe reports work accumulated between probe `Update` samples rather than attributing CPU time to the last logged method.
 
 ## Active hypotheses
 
@@ -25,23 +28,43 @@ Keep observed facts, hypotheses, root causes, and accepted results separate. Do 
 
 Day Wheel Quest Markers 1.0.28 removed the previously rhythmic roughly-30-second freezes, but the user still observed roughly two or three random short hitches over several minutes. A control run with Day Wheel removed produced a comparable two or three random hitches over a similar interval.
 
-The one-minute Save Now calibration proved that saves can generate ~0.75–0.8 s stalls, but this does **not** explain the ordinary residual symptom because timed autosave is disabled in the normal profile. The later frame-spike capture now proves that at least one characteristic residual freeze occurs without a save, without unused-asset cleanup, and without managed Mono GC.
+The one-minute Save Now calibration proved that saves can generate ~0.75–0.8 s stalls, but this does **not** explain the ordinary residual symptom because timed autosave is disabled in the normal profile. Later frame-spike captures prove that the ordinary residual freeze can occur without a save, without `Resources.UnloadUnusedAssets`, and while the Unity main thread is actively consuming CPU for essentially the entire stall.
 
-Therefore the remaining sporadic hitch class is still open. Day Wheel, timed Save Now autosave, and managed GC as a universal explanation are all excluded as sole owners.
+The remaining sporadic hitch class is therefore still open. Day Wheel and timed Save Now autosave are excluded as sole owners. Blocking/I/O/scheduler wait is not a good explanation for the directly correlated ~0.7 s road captures because main-thread CPU share is ~98–99%.
 
-The next narrow question is whether the directly observed non-GC wall stall is **CPU-bound on the Unity main thread** or instead spends most of its wall interval blocked/waiting/descheduled. `GK Frame Spike Probe 0.2.0` adds only Windows main-thread CPU-time sampling (`GetThreadTimes`) to classify that distinction. A high CPU share will prioritize CPU hot-path instrumentation; a low CPU share will prioritize synchronous I/O, native waits/locks, scheduler/descheduling, or other blocking paths.
+### Managed/incremental GC component
 
-### Managed allocation / full-GC component
+The old interpretation that a `GC.CollectionCount` delta of zero excludes managed GC was incorrect for Unity's Mono/Boehm backend. `GC.CollectionCount(0..2)` maps to the same Boehm completed-collection counter, and incremental marking can consume work before that counter advances.
 
-`FRAME SPIKE #16` in the 0.1.0 capture coincided with a full managed collection and a ~528 MB managed heap. Current p1xel8ted source search finds an explicit `GC.Collect()` only in Save Now's Exit To Desktop branch, which was not active in the captured scenario; owned public mod source search did not find another explicit caller.
+Evidence now supporting GC involvement:
 
-Hypothesis: at least some residual-looking freezes may be automatic full Mono collections caused by accumulated allocation rather than explicit `GC.Collect()`. This is not yet a root cause because the allocation owner and collection duration are not measured, and another directly correlated freeze (#17) occurred without any collection.
+- 0.1.0 house-area spike: **711.93 ms**, collection counter `+1`;
+- 0.1.0 coal spike: **695.26 ms**, collection counter `+0`;
+- 0.2.0 road spike: **692.09 ms**, ~99.3% main-thread CPU, collection counter `+0`;
+- 0.3.0 Witch-Hill-area spike: **714.88 ms**, ~98.4% main-thread CPU, collection counter `+0`, Unity incremental GC enabled, and `incremental_pending=True` after the stall;
+- another 0.2.0 Witch-Hill-area spike measured **749.90 ms / 100% main-thread CPU** with collection counter `+1`.
+
+Hypothesis: these near-identical ~0.69–0.75 s residual freezes may be long Boehm GC work/fallbacks within an otherwise incremental collector, potentially when incremental work cannot keep up. Unity documents that an incremental collector can still choose a regular non-incremental collection if incremental steps cannot keep up or memory pressure requires it.
+
+This is **not yet root cause** because `incremental_pending=True` only proves that GC work remains in progress when sampled; it does not attribute all ~703 ms of CPU time to GC. The next narrow causal test is a short, automatically bounded A/B window with Unity GC completely disabled while traversing the same Witch Hill route. A characteristic ~0.7 s freeze that still occurs with `GCMode=Disabled` would falsify GC as a necessary mechanism for that event. Suppression under Disabled followed by recurrence after re-enable would strongly support GC as the causal mechanism.
+
+### Witch Hill zone / FlowScript trigger
+
+`witch_hill_down_zone_big_R` is now a repeatable temporal correlate: directly correlated severe road freezes in multiple runs appear immediately after its enter FlowScript. However an earlier same-run pass through the zone did not produce a severe spike, so the zone is not established as a deterministic expensive callback.
+
+Working alternatives remain:
+
+- the zone/FlowScript allocates or otherwise advances a GC-sensitive state and only freezes when GC timing/heap state crosses a threshold;
+- the zone is merely where an independent GC cycle happens to mature in these short reproduction routes;
+- another CPU-heavy path later in the previous frame is being reported at the next probe `Update` and happens to sit adjacent to the zone logs.
+
+Do not assign the zone or FlowCanvas as root cause until a GC-disabled A/B or narrower timing instrumentation separates these alternatives.
 
 ### Scene/subscene unload cleanup
 
 The previous IL/runtime probe found `SubsceneLoadManager.UnloadLastScene` and `SubsceneLoadManager.UnloadAllScenes` among direct `Resources.UnloadUnusedAssets()` callers. Because the save-path explanation is now separated from the ordinary baseline, these scene/subscene cleanup paths remain eligible suspects only for stalls that actually coincide with a scene/subscene cleanup trigger.
 
-The 0.1.0 coal-mining freeze does **not** support this hypothesis: no scene load or unused-assets cleanup was logged around `FRAME SPIKE #17`.
+The directly correlated coal/road freezes do **not** support this hypothesis: no scene load or unused-assets cleanup is logged around those spikes.
 
 ### Keeper's Lantern bounded global-scan fallbacks
 
@@ -58,8 +81,8 @@ These are **not** accepted as causes of the general dialogue/gameplay symptom. T
 - **Day Wheel Quest Markers as the sole cause of the remaining random microfreezes:** ruled out by the 1.0.28 control comparison. With the recurring Day Wheel defect removed, a similar low count of random short hitches remained both with Day Wheel present and with Day Wheel removed.
 - **Repeated FlowCanvas graph parsing as a normal gameplay requirement for Day Wheel after the persistent-manifest line:** ruled out by 1.0.26+ architecture and runtime evidence. 1.0.28 loaded the manifest behind loading in 6.16 ms, skipped FlowCanvas parsing, performed no runtime structural rebuild, and used cheap rebinds for later NPC discoveries.
 - **Timed Save Now autosave as the trigger for the ordinary baseline random hitches:** ruled out by configuration state. Autosave is disabled in the user's ordinary profile; the one-minute autosaves were introduced only for diagnostic calibration.
-- **Managed Mono GC as a necessary cause of every residual characteristic freeze:** ruled out by `FRAME SPIKE #17`, a directly user-correlated **695.26 ms** gameplay stall with `gc0=+0 gc1=+0 gc2=+0`.
-- **`Resources.UnloadUnusedAssets` / save cleanup as the direct trigger of the captured coal-mining freeze:** no such cleanup/save event occurs around `FRAME SPIKE #17` in the supplied log.
+- **Blocking/waiting/descheduling as the dominant mechanism of the directly correlated Witch-Hill road freeze:** 0.2.0 and 0.3.0 captures show ~98–99% of the ~0.7 s wall interval consumed as Unity-main-thread CPU time.
+- **`Resources.UnloadUnusedAssets` / save cleanup as the direct trigger of the captured coal/road residual freezes:** no such cleanup/save event occurs around the directly correlated residual spikes.
 - **Direct `Resources.UnloadUnusedAssets` call in the inspected current source of `BetterSaveSoulRebalance`, `SpecializedStorage`, or `KeepersLantern`:** no such caller is present in the inspected production source. This does not rule out the game itself, Unity internals, or third-party mods as the owner of any observed cleanup pass.
 - **Save Now's explicit `GC.Collect()` + `Resources.UnloadUnusedAssets()` exit code as the ordinary gameplay trigger:** current upstream source confines that explicit pair to the Exit To Desktop path. Normal Save Now auto/manual/new-day saves instead call `PlatformSpecific.SaveGame`, so any cleanup during those saves must be attributed to the downstream game save path unless separate evidence proves otherwise.
 
