@@ -14,6 +14,8 @@ Keep observed facts, hypotheses, root causes, and accepted results separate. Do 
 - The investigation has already separated at least one Day Wheel Quest Markers performance defect from the remaining sporadic baseline hitches; therefore no single mod is accepted as the cause of all reported freezes.
 - A previously supplied runtime probe found six references/caller paths capable of reaching `Resources.UnloadUnusedAssets()`, including `PlatformSpecific.SaveGameDataToSlot`, `SubsceneLoadManager.UnloadLastScene`, `SubsceneLoadManager.UnloadAllScenes`, `SleepGUI`, `WaitingGUI`, and Save Now-related code.
 - One previously supplied runtime cleanup sample reported `Loaded Objects now: 860406` and a **611.2889 ms** total cleanup, including **558.5640 ms** in `MarkObjects`. This proves that Unity unused-asset cleanup can be large enough in this installation to produce a visible main-thread-class stall. It does not by itself prove which trigger owns every observed microfreeze.
+- In the user's ordinary Save Now configuration, `Auto Save = False`, `Save On New Day = False`, and `Backup Saves On Save = False`. Therefore timed Save Now autosaves are not part of the ordinary steady-state baseline in which the residual random microfreezes were reported.
+- A deliberate one-minute Save Now calibration reproduced three near-identical save-triggered stalls: **772.9579 ms**, **759.0385 ms**, and **769.1783 ms** Unity unused-asset cleanup, with roughly 949k–955k loaded objects and ~695–710 ms spent in `MarkObjects`. A normal sleep/save in the same run produced **792.6656 ms**. Save-triggered stalls are therefore a confirmed separate hitch class.
 
 ## Active hypotheses
 
@@ -21,23 +23,17 @@ Keep observed facts, hypotheses, root causes, and accepted results separate. Do 
 
 Day Wheel Quest Markers 1.0.28 removed the previously rhythmic roughly-30-second freezes, but the user still observed roughly two or three random short hitches over several minutes. A control run with Day Wheel removed produced a comparable two or three random hitches over a similar interval.
 
-Therefore the remaining sporadic hitch class is still open. Day Wheel is not attributed as its owner without new evidence.
+The one-minute Save Now calibration later proved that saves can generate ~0.75–0.8 s stalls, but this does **not** explain the ordinary residual symptom because timed autosave is disabled in the normal profile. The user also reports freezes outside autosave events.
 
-A useful next question is whether those sporadic hitches correlate with Unity-wide cleanup/resource-management work, another mod's synchronous main-thread work, or game/engine behavior. Correlation must be established from runtime timing or source before assigning ownership.
+Therefore the remaining sporadic hitch class is still open. Day Wheel and timed Save Now autosave are not attributed as its owner without new evidence.
 
-### Save-path cleanup chain
+The next useful question is which recurring/high-frequency runtime path remains active in ordinary gameplay and can generate isolated main-thread spikes without an explicit save. Priority should be given to periodic scans, high-frequency Harmony patches, repeated hierarchy searches/reflection/enumeration, scene/subscene cleanup triggers, or mod-owned synchronous I/O that are actually reachable in the user's baseline configuration.
 
-Current upstream source inspection establishes a concrete trigger chain worth testing:
+### Scene/subscene unload cleanup
 
-- Save Now enables timed auto-save and routes auto/manual/new-day saves through the game's `PlatformSpecific.SaveGame(...)` path;
-- the previously supplied runtime probe found `PlatformSpecific.SaveGameDataToSlot` among direct `Resources.UnloadUnusedAssets()` call paths;
-- Alchemy Research Redux patches `PlatformSpecific.SaveGame` and, on every save, synchronously serializes/writes its recipe and last-mix JSON files (`File.WriteAllText`).
+The previous IL/runtime probe found `SubsceneLoadManager.UnloadLastScene` and `SubsceneLoadManager.UnloadAllScenes` among direct `Resources.UnloadUnusedAssets()` callers. Because the save-path explanation is now separated from the ordinary baseline, these scene/subscene cleanup paths remain eligible suspects for non-save stalls if they can be shown to run during ordinary movement/dialogue/location transitions.
 
-Save Now itself also contains a direct `GC.Collect()` + `Resources.UnloadUnusedAssets()` call, but current source places that direct call specifically in its **Exit To Desktop** path. It is therefore not evidence for ordinary mid-game stalls.
-
-Hypothesis: some residual gameplay stalls are save-triggered. The dominant cost may be the base-game/Unity unused-asset cleanup reached by the save path, with third-party synchronous save postfix work adding smaller extra cost. This is not yet a root cause for the general symptom because the remaining random hitches have not yet been event-correlated to save timestamps, and scene-unload paths can invoke the same Unity cleanup independently.
-
-A high-information low-cost test is to temporarily shorten Save Now's auto-save interval to one minute for a brief controlled run while leaving the rest of the mod set unchanged. If the visible hitch and `UnloadUnusedAssets` cleanup become phase-locked to the one-minute save cadence, the save-triggered component is confirmed. If cleanup occurs without the hitch or hitches occur off-cadence, continue with the independent scene-unload path.
+No root-cause status is assigned yet: a caller reference alone is insufficient. The next source/runtime step is to identify when these methods are invoked in normal gameplay and whether their invocation coincides with the residual hitch class.
 
 ### Keeper's Lantern bounded global-scan fallbacks
 
@@ -53,6 +49,7 @@ These are **not** accepted as causes of the general dialogue/gameplay symptom. T
 
 - **Day Wheel Quest Markers as the sole cause of the remaining random microfreezes:** ruled out by the 1.0.28 control comparison. With the recurring Day Wheel defect removed, a similar low count of random short hitches remained both with Day Wheel present and with Day Wheel removed.
 - **Repeated FlowCanvas graph parsing as a normal gameplay requirement for Day Wheel after the persistent-manifest line:** ruled out by 1.0.26+ architecture and runtime evidence. 1.0.28 loaded the manifest behind loading in 6.16 ms, skipped FlowCanvas parsing, performed no runtime structural rebuild, and used cheap rebinds for later NPC discoveries.
+- **Timed Save Now autosave as the trigger for the ordinary baseline random hitches:** ruled out by configuration state. Autosave is disabled in the user's ordinary profile; the one-minute autosaves were introduced only for diagnostic calibration.
 - **Direct `Resources.UnloadUnusedAssets` call in the inspected current source of `BetterSaveSoulRebalance`, `SpecializedStorage`, or `KeepersLantern`:** no such caller is present in the inspected production source. This does not rule out the game itself, Unity internals, or third-party mods as the owner of any observed cleanup pass.
 - **Save Now's explicit `GC.Collect()` + `Resources.UnloadUnusedAssets()` exit code as the ordinary gameplay trigger:** current upstream source confines that explicit pair to the Exit To Desktop path. Normal Save Now auto/manual/new-day saves instead call `PlatformSpecific.SaveGame`, so any cleanup during those saves must be attributed to the downstream game save path unless separate evidence proves otherwise.
 
@@ -81,6 +78,18 @@ Owner: `666drjekyll666-cloud/DayWheelQuestMarkers`.
 1.0.28 replaced these with non-allocating count/fingerprint/live-player checks while preserving reminder semantics and manifest format. Player A/B result: the previous rhythmic roughly-30-second freezes disappeared. The remaining random short hitches occurred at a comparable rate in the Day-Wheel-removed control.
 
 Status: root cause confirmed and performance objective confirmed for the rhythmic Day Wheel component. Stable public baseline in the owning repository remains 1.0.24 until that repository's runtime/functional acceptance line is completed.
+
+### Save-triggered Unity unused-asset cleanup
+
+Owner/trigger split:
+
+- trigger can be any path that invokes the game's save pipeline, including manual save, sleep/new-day save, or deliberately enabled Save Now autosave;
+- the heavy cleanup itself is in the game/Unity `PlatformSpecific.SaveGameDataToSlot -> Resources.UnloadUnusedAssets()` path, not Save Now's ordinary timed-save code;
+- Save Now's role during the calibration was only to provide a repeatable timer trigger.
+
+Three consecutive one-minute autosaves produced **772.9579 ms**, **759.0385 ms**, and **769.1783 ms** cleanup; a sleep/save produced **792.6656 ms**. The dominant component was `MarkObjects`, around 695–732 ms with roughly 949k–955k loaded objects.
+
+Status: root cause confirmed for save-triggered stalls. This result is **not** the root cause of the ordinary residual random hitch class because the ordinary configuration has timed autosave disabled.
 
 ## Cross-project findings
 
@@ -116,9 +125,9 @@ Current upstream `p1xel8ted/Graveyard-Keeper-Mods` source was inspected for Save
 
 Save Now:
 
-- timed auto-save is configurable and defaults on;
+- timed auto-save is configurable;
 - auto-save, manual save, and new-day save all call `PlatformSpecific.SaveGame`;
-- the source includes debug messages around auto-save start/completion that can be used for low-cost runtime correlation;
+- the source includes debug messages around auto-save start/completion that were used for the calibration;
 - its explicit `GC.Collect()` + `Resources.UnloadUnusedAssets()` is in the Exit To Desktop branch, not the normal timed save branch.
 
 Alchemy Research Redux:
@@ -127,7 +136,7 @@ Alchemy Research Redux:
 - every save calls `AlchemyRecipe.SaveRecipesToFile()` and `LastMix.SaveToFile()`;
 - both use synchronous JSON serialization/file writes; `LastMix.SaveToFile()` directly uses `File.WriteAllText`, and the recipe persistence path does the same.
 
-This establishes a plausible compounded save path, but no production fix is justified until runtime correlation identifies which cost actually produces the user's residual hitch.
+The calibration shows that the dominant observed stall is the downstream Unity cleanup, not enough evidence to blame the small additional Alchemy JSON writes. No production fix in Save Now or Alchemy Research Redux is justified for this save-stall class from current evidence.
 
 ## Measurement notes
 
