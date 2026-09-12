@@ -1,0 +1,41 @@
+name: Build frame-spike diagnostic
+
+on:
+  push:
+    branches:
+      - research/frame-spike-probe
+    paths:
+      - FrameSpikeProbe.csproj
+      - diagnostics/FrameSpikeProbe.cs
+      - .github/workflows/build-frame-spike-probe.yml
+
+concurrency:
+  group: frame-spike-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore FrameSpikeProbe.csproj
+
+      - name: Build Release
+        run: dotnet build FrameSpikeProbe.csproj -c Release --no-restore
+
+      - name: Hash diagnostic DLL
+        run: sha256sum bin/Release/GKFrameSpikeProbe.dll
+
+      - name: Upload diagnostic DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: GKFrameSpikeProbe-diagnostic
+          path: bin/Release/GKFrameSpikeProbe.dll
+          if-no-files-found: error
+          retention-days: 2
