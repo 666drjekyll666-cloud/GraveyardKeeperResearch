@@ -90,9 +90,9 @@ Do not record routine repository inspection as an in-game test. Do not rewrite a
 - Evidence: `GK Frame Spike Probe (Diagnostic) 0.1.0` runtime log.
 - Observed result: two large steady-state gameplay spikes stand out after load. `FRAME SPIKE #16` measured **711.93 ms**, `focused=True`, `timeScale=1`, managed heap **528.1 MB**, with `gc0=+1 gc1=+1 gc2=+1`. It occurred in the house-area portion of the run and is the strongest temporal match to the user's first reported freeze, although the user did not timestamp that first event exactly. `FRAME SPIKE #17` measured **695.26 ms**, `focused=True`, `timeScale=1`, managed heap **613.9 MB**, with **`gc0=+0 gc1=+0 gc2=+0`** while the player was repeatedly mining coal. The log was submitted immediately after this second perceived freeze, so #17 is the direct correlation target.
 - Additional negative evidence: no `Resources.UnloadUnusedAssets` / `Unloading ... unused Assets` runtime cleanup, save event, scene load, or focus transition occurs around #17. The spike is logged before the subsequent coal depletion/replacement/drop lines, so the coal object's completion itself is not established as the trigger.
-- Interpretation: managed GC is **not necessary** for the residual characteristic gameplay freeze class. At least one directly correlated ~695 ms freeze occurred with no managed collection. #16 separately shows that a visually similar ~712 ms freeze can coincide with a full managed collection, so the residual symptom may still be composite. A common upstream allocator/owner is not established.
-- Status: `rules out` "all residual freezes are Mono GC"; `supports hypothesis` that at least one independent non-GC main-thread stall remains.
-- Next step: classify the non-GC stall as CPU-bound versus blocked/descheduled by measuring Unity main-thread CPU time across the same wall-clock spike interval.
+- Interpretation at the time: managed GC was treated as not necessary because `GC.CollectionCount` did not advance on #17.
+- Status at the time: `rules out` "all residual freezes are Mono GC".
+- Later correction: this interpretation is superseded by the Boehm-counter semantics entry below. The raw measurement remains valid, but `gc0/gc1/gc2=+0` does not prove absence of incremental GC work.
 
 ### 2026-09-13 — GK Frame Spike Probe 0.2.0 handoff
 
@@ -105,3 +105,59 @@ Do not record routine repository inspection as an in-game test. Do not rewrite a
 - SHA-256: `3cb6a6efcf3c2aa16be9679b06e78fc9616ef9c3c774b9979bec7ec78f7c3151`.
 - Status: `inconclusive` until runtime capture.
 - Next step: replace 0.1.0 with 0.2.0, leave the normal mod/config baseline unchanged, and capture another characteristic freeze. A high `cpu_share_pct` will prioritize CPU hot-path instrumentation; a low share will prioritize blocking/I/O/scheduler/native-wait investigation.
+
+### 2026-09-13 — GK Frame Spike Probe 0.2.0 runtime capture
+
+- Question: is the directly correlated residual ~0.7 s freeze CPU-bound on the Unity main thread or mostly blocked/waiting/descheduled?
+- Scenario: ordinary gameplay with normal Save Now autosave-off configuration; user reported three characteristic freezes, including a severe third freeze while walking on the road near Witch Hill immediately before sending the log.
+- Evidence: `GK Frame Spike Probe (Diagnostic) 0.2.0` runtime log plus immediate user correlation.
+- Observed result: the directly correlated third freeze was `FRAME SPIKE #13`: **692.09 ms wall**, **687.50 ms main-thread CPU**, **4.59 ms non-CPU wall**, **99.3% CPU share**, `focused=True`, `timeScale=1`, `gc0/gc1/gc2=+0`, managed heap **590.3 MB**. Immediately preceding logs include `witch_hill_down_zone_big_R` entry/FlowScript activity. Separate sleep/save spikes were also captured and matched the already-proven `Resources.UnloadUnusedAssets` save class. A sleep-time control interval measured **257.97 ms wall / 31.25 ms CPU / 12.1% CPU share**, demonstrating that the CPU-time classifier can distinguish waiting/descheduling from active main-thread CPU work.
+- Interpretation: the characteristic road freeze is decisively **CPU-bound on the Unity main thread**, not primarily synchronous I/O wait, scheduler descheduling, or a blocked native wait. The adjacent Witch Hill zone is a trigger candidate but not yet causal because the probe samples between `Update` calls rather than attributing CPU time to the last log line.
+- Status: `rules out` blocked/waiting/descheduled as the dominant mechanism for this directly correlated event; `supports hypothesis` of a main-thread CPU hot path.
+- Next step taken: re-evaluate GC counter semantics before instrumenting a game/zone CPU path.
+
+### 2026-09-13 — Boehm GC counter semantics correction
+
+- Question: does `GC.CollectionCount(0..2)=+0` prove that no managed GC work occurred during a spike in Unity 2020/Mono?
+- Evidence: Mono Boehm backend implementation and Boehm collection-counter semantics; durable note `docs/GC_COUNTER_NOTE.md`.
+- Observed result: Mono's Boehm backend implements `mono_gc_collection_count(int generation)` with the single `GC_get_gc_no()` counter; the generation argument is ignored. Boehm increments that counter once per completed collection. Incremental marking work can therefore occur before the counter advances.
+- Interpretation: `gc0/gc1/gc2=+1` confirms a completed-collection-counter advance; `+0` proves only no such counter advance during the interval and **does not prove zero GC work**. The earlier 0.1 interpretation that #17 was a proven non-GC stall is too strong and is superseded.
+- Status: `accepted fact`.
+- Next step taken: probe 0.3.0 adds Unity incremental-GC state and a zero-budget `CollectIncremental(0)` query on spike-only paths.
+
+### 2026-09-13 — GK Frame Spike Probe 0.3.0 handoff
+
+- Question: when a characteristic ~0.7 s CPU spike has no Boehm cycle-count advance, is Unity incremental GC enabled and is incremental collection work still pending immediately afterward?
+- Diagnostic delta from 0.2.0: startup/spike-only logging adds `GarbageCollector.isIncremental`, `GarbageCollector.GCMode`, `incrementalTimeSliceNanoseconds`, `gc_cycle_delta`, and `CollectIncremental(0)` result as `incremental_pending`. No positive GC time budget is requested by the probe.
+- Development source commit: `a7e01dd74a83e7106490617c9a6bfe91259815ce`.
+- Frozen diagnostic source: `diagnostic/frame-spike-probe-0.3.0` at `750ddc0cb1760233d2b632fb712380bc999cbc70`.
+- Build evidence: GitHub Actions run `34722920364` on `ubuntu-latest`; restore, Release build, hash, and artifact upload succeeded.
+- Artifact ID: `10306378806`.
+- Artifact ZIP SHA-256: `39f37ba29b484464e4abac990e43b9ca86a83a2515693bc6f93053546d56684f`.
+- DLL SHA-256: `eac9a0f2bed63d7b955c7bab7fdd880c7f0032c8aaf663b7f4a3c3e9799516ef`.
+- Status: `inconclusive` until runtime capture.
+- Next step: reproduce a characteristic freeze, preferably around the repeatable Witch Hill route, and submit the log immediately.
+
+### 2026-09-13 — GK Frame Spike Probe 0.3.0 runtime capture
+
+- Question: does a directly correlated characteristic ~0.7 s CPU freeze occur while Unity incremental GC is active and still has work pending?
+- Scenario: ordinary gameplay; user installed 0.3.0, walked toward/through the Witch Hill lower-road route, perceived a characteristic freeze, and immediately supplied the log.
+- Evidence: supplied 0.3.0 runtime log.
+- Observed result: probe startup reports `unity_gc_incremental=True`, `unity_gc_mode=Enabled`, `unity_gc_slice_ns=3000000`. The directly correlated `FRAME SPIKE #2` measured **714.88 ms wall**, **703.13 ms main-thread CPU**, **11.76 ms non-CPU wall**, **98.4% CPU share**, `gc_cycle_delta=0`, managed heap **560.6 MB**, and `incremental_pending=True`. The spike appears immediately after `witch_hill_down_zone_big_R` enter/FlowScript logging. Earlier in the same run a **51.76 ms** spike also had `incremental_pending=True`, so pending state is not unique to the severe event.
+- Interpretation: a live Unity incremental GC cycle definitely spans the characteristic severe freeze, and zero Boehm cycle delta does not exclude GC. However `incremental_pending=True` alone does **not** prove that GC consumed the full ~703 ms because pending work can coexist with unrelated CPU work. Witch Hill remains a strong temporal trigger candidate but not a proven owner.
+- Status: `supports hypothesis` that GC is the common mechanism behind the ~0.69–0.75 s residual freezes; not yet `root cause`.
+- Next step: perform a short controlled A/B with GC completely disabled while traversing the same route.
+
+### 2026-09-13 — GK Frame Spike Probe 0.4.0 handoff
+
+- Question: does the characteristic ~0.7 s Witch-Hill-area freeze still occur when Unity garbage collection is completely disabled for a very short controlled window?
+- Diagnostic delta from 0.3.0: pressing **F6** after the probe arms starts a bounded **15-second** `GarbageCollector.GCMode=Disabled` window. The previous GC mode is captured and automatically restored on timeout, a second F6 press, focus loss, or plugin destruction. The probe does **not** call `GC.Collect()` when restoring. Spike logs add `gc_hold_active` and remaining hold time; hold start/end logs include managed-memory growth and collection-counter delta.
+- Safety rationale: Unity documents `GCMode.Disabled` as completely disabling the collector and warns that memory grows while it is disabled. The 15-second automatic limit and focus-loss restoration constrain that risk; this is diagnostic-only behavior, not a proposed production fix.
+- Development branch: `research/frame-spike-probe-v0.4`.
+- Frozen diagnostic source: `diagnostic/frame-spike-probe-0.4.0` at `8e9b988e50a6b66825b9bbfd37287e905b5fce55`.
+- Build evidence: GitHub Actions run `34723457626` on `ubuntu-latest`; restore succeeded, Release build succeeded with **0 warnings / 0 errors**, hash step succeeded, artifact upload succeeded.
+- Artifact ID: `10306519308`.
+- Artifact ZIP SHA-256: `cc791c55238e3d3eb35dbdfa47cae6ed2dd5c05d2323381791ebca15321e5594`.
+- DLL SHA-256: `a906a045adb41a3fa85946f44c4a6d1f89cc68aaeac434f7d11b79845712c420`.
+- Status: `inconclusive` until controlled runtime A/B.
+- Next step: replace 0.3.0 with 0.4.0, keep all other mods/config unchanged, reach the Witch Hill lower-road reproduction area, press F6, immediately traverse the same `big_L`/`big_R` boundary repeatedly during the 15-second GC-disabled window, then after `[GC HOLD END]` traverse it again with GC restored. Submit the log immediately after a characteristic freeze or after the enabled/disabled/enabled comparison is complete.
