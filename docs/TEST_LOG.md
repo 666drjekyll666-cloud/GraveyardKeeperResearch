@@ -69,3 +69,16 @@ Do not record routine repository inspection as an in-game test. Do not rewrite a
 - Interpretation: the save path is a confirmed, highly reproducible source of ~0.75–0.8 s stalls in this installation. However the timed Save Now autosave cannot explain the original ordinary steady-state symptom because autosave was disabled in the normal configuration. The user also reports that residual freezes occur outside autosave events. Treat save-related stalls as a separate known hitch class, not the root cause of the remaining random microfreezes.
 - Status: `root cause confirmed` for save-triggered stalls; `rules out` Save Now timed autosave as the ordinary recurring trigger under the user's baseline configuration.
 - Next step: inspect recurring/high-frequency runtime paths in the remaining mod set and correlate only new candidates with the residual non-save hitch class.
+
+### 2026-09-13 — GK Frame Spike Probe 0.1.0 handoff
+
+- Question: do the remaining non-save gameplay frame spikes coincide with Mono GC collections, or are they long frames with no collection event?
+- Rationale: static source audit of the current owned mods and the accessible p1xel8ted runtime mods did not reveal another generic half-second dialogue/gameplay hot path; the previous unused-assets probe observed runtime cleanup at save/return-to-menu events rather than ordinary dialogue/walking.
+- Diagnostic behavior: normal-frame work is restricted to one `Stopwatch.GetTimestamp()` and `GC.CollectionCount(0..2)` sample per `Update`; no Unity object scans, stack traces, hierarchy enumeration, synchronous I/O, or per-frame logging. It ignores the first 30 realtime seconds and logs only intervals >= 50 ms. On a spike only, it additionally records Unity unscaled delta, frame number, focus/timeScale, GC generation deltas, and managed heap size.
+- Source branch: `research/frame-spike-probe`.
+- Frozen diagnostic source: `diagnostic/frame-spike-probe-0.1.0` at `7cf1aa6a62f3503fb4d70ba81cb7ee46480f3794`.
+- Build evidence: GitHub Actions run `34721589397` on `ubuntu-latest`; restore, Release build, hash step, and artifact upload all succeeded. The first run `34721538967` failed during restore before compilation because `nuget.config`/the BepInEx feed was absent; this was an infrastructure configuration failure, not a source compile failure.
+- Artifact: `GKFrameSpikeProbe.dll`.
+- SHA-256: `705acfc354c19878267ab5ec2bc73ac11a9c99420adb7c1e61e509d06a8b11fc`.
+- Status: `inconclusive` until runtime capture.
+- Next step: run the ordinary problematic gameplay scenario with Save Now returned to its normal autosave-off configuration and this probe added; submit the resulting BepInEx log plus whether/when visible non-save hitches were noticed.
