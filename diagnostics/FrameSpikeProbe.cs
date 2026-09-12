@@ -13,7 +13,10 @@ namespace GKFrameSpikeProbe
     {
         public const string PluginGuid = "nikich.gyk.diagnostics.framespikeprobe";
         public const string PluginName = "GK Frame Spike Probe (Diagnostic)";
-        public const string PluginVersion = "0.3.0";
+        public const string PluginVersion = "0.4.0";
+
+        private const KeyCode GcHoldKey = KeyCode.F6;
+        private const float GcHoldSeconds = 15f;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct FileTime
@@ -51,6 +54,12 @@ namespace GKFrameSpikeProbe
         private ulong _unityGcSliceNs;
         private GarbageCollector.Mode _unityGcMode;
 
+        private bool _gcHoldActive;
+        private float _gcHoldUntil;
+        private GarbageCollector.Mode _gcHoldRestoreMode;
+        private long _gcHoldStartManagedBytes;
+        private int _gcHoldStartCycle;
+
         private void Awake()
         {
             _thresholdMs = Config.Bind(
@@ -78,19 +87,24 @@ namespace GKFrameSpikeProbe
 
             Logger.LogInfo(
                 PluginName + " " + PluginVersion + " loaded. " +
-                "Normal-frame work is limited to Stopwatch timestamp + GC.CollectionCount(0..2) + Windows GetThreadTimes for the Unity main thread. " +
+                "Normal-frame work is limited to Stopwatch timestamp + GC.CollectionCount(0..2) + Windows GetThreadTimes for the Unity main thread + one F6 key-state check. " +
                 "Unity incremental-GC state is queried only at startup and on logged spikes; CollectIncremental(0) performs no collection work. " +
+                "F6 starts a bounded 15-second diagnostic GC hold by setting GarbageCollector.GCMode=Disabled; it auto-restores the previous GC mode and never calls GC.Collect on restore. " +
                 "No object scans, stack traces, hierarchy enumeration, synchronous file I/O, or per-frame log writes are performed. " +
                 "threshold_ms=" + _thresholdMs.Value.ToString("0.0") +
                 ", arm_delay_s=" + _armDelaySeconds.Value.ToString("0.0") +
                 ", main_thread_cpu=" + (_threadCpuAvailable ? "available" : "unavailable") +
                 ", unity_gc_incremental=" + _unityGcIncremental +
                 ", unity_gc_mode=" + _unityGcMode +
-                ", unity_gc_slice_ns=" + _unityGcSliceNs + ".");
+                ", unity_gc_slice_ns=" + _unityGcSliceNs +
+                ", gc_hold_key=" + GcHoldKey +
+                ", gc_hold_seconds=" + GcHoldSeconds.ToString("0") + ".");
         }
 
         private void Update()
         {
+            HandleGcHoldControl();
+
             long nowTicks = Stopwatch.GetTimestamp();
             int gc0 = GC.CollectionCount(0);
             int gc1 = GC.CollectionCount(1);
@@ -141,7 +155,9 @@ namespace GKFrameSpikeProbe
                     ", main_thread_cpu=" + (_threadCpuAvailable ? "available" : "unavailable") +
                     ", unity_gc_incremental=" + _unityGcIncremental +
                     ", unity_gc_mode=" + _unityGcMode +
-                    ", unity_gc_slice_ns=" + _unityGcSliceNs + ".");
+                    ", unity_gc_slice_ns=" + _unityGcSliceNs +
+                    ", gc_hold_key=" + GcHoldKey +
+                    ", gc_hold_seconds=" + GcHoldSeconds.ToString("0") + ".");
             }
 
             if (elapsedMs < _thresholdMs.Value)
@@ -152,20 +168,7 @@ namespace GKFrameSpikeProbe
             if (elapsed > _maxSpikeMs) _maxSpikeMs = elapsed;
 
             long managedBytes = GC.GetTotalMemory(false);
-            bool incrementalPending = false;
-            string incrementalPendingText = "NA";
-            if (_unityGcIncremental && GarbageCollector.GCMode != GarbageCollector.Mode.Disabled)
-            {
-                try
-                {
-                    incrementalPending = GarbageCollector.CollectIncremental(0);
-                    incrementalPendingText = incrementalPending ? "True" : "False";
-                }
-                catch (Exception ex)
-                {
-                    incrementalPendingText = "ERR:" + ex.GetType().Name;
-                }
-            }
+            string incrementalPendingText = QueryIncrementalPendingText();
 
             string cpuPart;
             if (mainThreadCpuMs >= 0.0)
@@ -181,6 +184,8 @@ namespace GKFrameSpikeProbe
             {
                 cpuPart = " main_thread_cpu_ms=NA non_cpu_wall_ms=NA cpu_share_pct=NA";
             }
+
+            float holdRemaining = _gcHoldActive ? Math.Max(0f, _gcHoldUntil - Time.realtimeSinceStartup) : 0f;
 
             Logger.LogWarning(
                 "[FRAME SPIKE #" + _spikeCount + "] " +
@@ -198,16 +203,143 @@ namespace GKFrameSpikeProbe
                 " unity_gc_mode=" + GarbageCollector.GCMode +
                 " incremental_pending=" + incrementalPendingText +
                 " unity_gc_slice_ns=" + GarbageCollector.incrementalTimeSliceNanoseconds +
+                " gc_hold_active=" + _gcHoldActive +
+                " gc_hold_remaining_s=" + holdRemaining.ToString("0.0") +
                 " managed_mb=" + (managedBytes / (1024.0 * 1024.0)).ToString("0.0") + ".");
+        }
+
+        private void HandleGcHoldControl()
+        {
+            bool keyDown = Input.GetKeyDown(GcHoldKey);
+
+            if (_gcHoldActive)
+            {
+                if (keyDown)
+                {
+                    EndGcHold("manual");
+                }
+                else if (Time.realtimeSinceStartup >= _gcHoldUntil)
+                {
+                    EndGcHold("timeout");
+                }
+
+                return;
+            }
+
+            if (!keyDown || Time.realtimeSinceStartup < _armAt)
+                return;
+
+            StartGcHold();
+        }
+
+        private void StartGcHold()
+        {
+            if (GarbageCollector.GCMode == GarbageCollector.Mode.Disabled)
+            {
+                Logger.LogWarning("[GC HOLD NOT STARTED] GarbageCollector.GCMode is already Disabled; diagnostic did not change global GC state.");
+                return;
+            }
+
+            GarbageCollector.Mode previousMode = GarbageCollector.GCMode;
+            string pendingBefore = QueryIncrementalPendingText();
+            long managedBefore = GC.GetTotalMemory(false);
+            int cycleBefore = GC.CollectionCount(0);
+
+            try
+            {
+                GarbageCollector.GCMode = GarbageCollector.Mode.Disabled;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("[GC HOLD FAILED] Could not disable GC: " + ex.GetType().Name + ": " + ex.Message);
+                return;
+            }
+
+            if (GarbageCollector.GCMode != GarbageCollector.Mode.Disabled)
+            {
+                Logger.LogError("[GC HOLD FAILED] Requested Disabled but runtime reports " + GarbageCollector.GCMode + ".");
+                return;
+            }
+
+            _gcHoldRestoreMode = previousMode;
+            _gcHoldStartManagedBytes = managedBefore;
+            _gcHoldStartCycle = cycleBefore;
+            _gcHoldUntil = Time.realtimeSinceStartup + GcHoldSeconds;
+            _gcHoldActive = true;
+
+            Logger.LogWarning(
+                "[GC HOLD START] duration_s=" + GcHoldSeconds.ToString("0") +
+                " restore_mode=" + previousMode +
+                " incremental_pending_before=" + pendingBefore +
+                " gc_cycle=" + cycleBefore +
+                " managed_mb=" + (managedBefore / (1024.0 * 1024.0)).ToString("0.0") +
+                ". Cross the target area now; F6 ends the hold early. GC will restore automatically.");
+
+            ResetSample();
+        }
+
+        private void EndGcHold(string reason)
+        {
+            if (!_gcHoldActive)
+                return;
+
+            GarbageCollector.Mode restoreMode = _gcHoldRestoreMode;
+            long managedBeforeRestore = GC.GetTotalMemory(false);
+            int cycleBeforeRestore = GC.CollectionCount(0);
+
+            try
+            {
+                GarbageCollector.GCMode = restoreMode;
+            }
+            catch (Exception ex)
+            {
+                Logger.LogError("[GC HOLD RESTORE FAILED] Could not restore GC mode to " + restoreMode + ": " + ex.GetType().Name + ": " + ex.Message);
+                return;
+            }
+
+            _gcHoldActive = false;
+            _gcHoldUntil = 0f;
+
+            Logger.LogWarning(
+                "[GC HOLD END] reason=" + reason +
+                " restored_mode=" + GarbageCollector.GCMode +
+                " gc_cycle_delta=" + (cycleBeforeRestore - _gcHoldStartCycle) +
+                " managed_mb_start=" + (_gcHoldStartManagedBytes / (1024.0 * 1024.0)).ToString("0.0") +
+                " managed_mb_end=" + (managedBeforeRestore / (1024.0 * 1024.0)).ToString("0.0") +
+                " managed_growth_mb=" + ((managedBeforeRestore - _gcHoldStartManagedBytes) / (1024.0 * 1024.0)).ToString("0.0") +
+                ". No forced collection was issued on restore.");
+
+            ResetSample();
+        }
+
+        private string QueryIncrementalPendingText()
+        {
+            if (!_unityGcIncremental || GarbageCollector.GCMode == GarbageCollector.Mode.Disabled)
+                return "NA";
+
+            try
+            {
+                return GarbageCollector.CollectIncremental(0) ? "True" : "False";
+            }
+            catch (Exception ex)
+            {
+                return "ERR:" + ex.GetType().Name;
+            }
         }
 
         private void OnApplicationFocus(bool focused)
         {
+            if (!focused && _gcHoldActive)
+                EndGcHold("focus_lost");
+
             ResetSample();
         }
 
         private void OnDestroy()
         {
+            if (_gcHoldActive)
+                EndGcHold("plugin_destroy");
+
             Logger.LogInfo(
                 "FRAME SPIKE PROBE STOPPED | spikes=" + _spikeCount +
                 " max_ms=" + _maxSpikeMs.ToString("0.00") + ".");
