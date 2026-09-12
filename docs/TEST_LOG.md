@@ -20,4 +20,42 @@ Do not record routine repository inspection as an in-game test. Do not rewrite a
 
 ## Tests
 
-No controlled tests have been entered into this repository yet.
+### 2026-09-12 — Day Wheel Quest Markers 1.0.25 fresh-game structural rebuild
+
+- Question: can newly discovered weekday NPCs be handled without reparsing the six weekday FlowCanvas graphs during gameplay?
+- Comparison/control: 1.0.25 first-NPC rebind candidate against the earlier unified-cache behavior.
+- Evidence: owning-repository runtime log and source audit.
+- Observed result: first Bishop/weekday-NPC introduction still triggered a **302.22 ms** synchronous structural rebuild; later NPC discoveries used cheap rebinding only.
+- Interpretation: the rebind model was valid, but the loading prewarm window was missed because `game_starting` polarity was wrong.
+- Status: `root cause confirmed` for the first-weekday-NPC hitch.
+- Next step taken: 1.0.26 persistent-manifest candidate moved structural discovery to the verified loading window.
+
+### 2026-09-12 — Day Wheel Quest Markers 1.0.26 persistent manifest
+
+- Question: does removing gameplay FlowCanvas parsing eliminate the measured first-NPC hitch?
+- Comparison/control: 1.0.26 versus 1.0.25 on fresh/current saves.
+- Evidence: owning-repository runtime logs and test record.
+- Observed result: the first Bishop introduction no longer produced the previous ~302 ms structural rebuild. A subsequent launch loaded the manifest behind loading in **5.95 ms** with canonical counts; later NPC discoveries used rebind only. User reported a substantial drop in noticeable freezes, but intermittent hitches remained.
+- Interpretation: synchronous gameplay structural parsing was a real contributor but not the sole source of all microfreezes.
+- Status: `supports hypothesis` / partial performance fix; not final acceptance.
+- Next step taken: preserve manifest architecture and inspect remaining recurring steady-state work.
+
+### 2026-09-12 — Day Wheel Quest Markers 1.0.27 recurring hitch audit
+
+- Question: why does an approximately 0.5 s hitch still appear roughly every 30–60 seconds after graph parsing is removed from gameplay?
+- Comparison/control: source/runtime inspection of the 1.0.27 steady-state path.
+- Evidence: source audit plus supplied short-run log.
+- Observed result: no runtime graph rebuild in the captured interval; source still performed avoidable recurring allocations: per-second dictionary construction for known-NPC count, 30-second list/sort/array/string signature construction, and per-second reflective invocation with argument-array allocation.
+- Interpretation: Day Wheel still had a plausible rhythmic allocation/GC-pressure defect independent of FlowCanvas parsing.
+- Status: `supports hypothesis` pending A/B runtime confirmation.
+- Next step taken: 1.0.28 replaced those paths with allocation-free checks.
+
+### 2026-09-12 — Day Wheel Quest Markers 1.0.28 allocation-free A/B
+
+- Question: are the recurring Day Wheel allocations responsible for the rhythmic roughly-30-second freezes, and does a residual hitch class remain without Day Wheel?
+- Comparison/control: 1.0.28 allocation-free candidate versus the preceding 1.0.27 behavior, plus a control run with Day Wheel removed over a similar interval.
+- Evidence: owning-repository runtime log and user observation.
+- Observed result: the previous rhythmic roughly-30-second freezes **disappeared**. The 1.0.28 log loaded the persistent manifest in **6.16 ms**, skipped FlowCanvas graph parsing, showed no runtime structural rebuild, and later NPC discoveries used cheap rebinds. Roughly two or three random short hitches still occurred over several minutes; the Day-Wheel-removed control produced a comparable two or three random hitches over a similar interval.
+- Interpretation: recurring Day Wheel allocation pressure was causal for the rhythmic component. The remaining sporadic hitch class exists independently at the tested baseline and is not attributable to Day Wheel from this evidence.
+- Status: `root cause confirmed` for the rhythmic Day Wheel component; `rules out` Day Wheel as the sole owner of the residual random hitches.
+- Next step: investigate the remaining random hitch class cross-mod/game-wide rather than continuing to optimize Day Wheel without new evidence.
