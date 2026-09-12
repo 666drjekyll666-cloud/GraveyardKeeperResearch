@@ -161,3 +161,26 @@ Do not record routine repository inspection as an in-game test. Do not rewrite a
 - DLL SHA-256: `a906a045adb41a3fa85946f44c4a6d1f89cc68aaeac434f7d11b79845712c420`.
 - Status: `inconclusive` until controlled runtime A/B.
 - Next step: replace 0.3.0 with 0.4.0, keep all other mods/config unchanged, reach the Witch Hill lower-road reproduction area, press F6, immediately traverse the same `big_L`/`big_R` boundary repeatedly during the 15-second GC-disabled window, then after `[GC HOLD END]` traverse it again with GC restored. Submit the log immediately after a characteristic freeze or after the enabled/disabled/enabled comparison is complete.
+
+### 2026-09-13 — GK Frame Spike Probe 0.4.0 first GC-disabled A/B
+
+- Question: is the characteristic residual ~0.7 s stall suppressed while Unity GC is disabled and restored when GC resumes?
+- Scenario: normal 32-plugin baseline, same Witch Hill lower-road route, one 15-second F6 hold.
+- Evidence: supplied 0.4.0 runtime log plus immediate user report of the characteristic freeze on the return walk.
+- Observed result: the hold started with `incremental_pending_before=True`, `gc_cycle=137`, managed heap **474.7 MB**. The player crossed `skull_back_zone`, `witch_hill_down_zone_big_L`, and `witch_hill_down_zone_big_R` while GC was disabled; no characteristic ~0.7 s spike was logged during the hold. The hold timed out with `gc_cycle_delta=0`, managed heap **492.9 MB**, growth **18.2 MB**, and restored `GCMode=Enabled`. Immediately after restore, `FRAME SPIKE #1` measured **686.95 ms wall / 687.50 ms main-thread CPU / 100% CPU share**, `gc_cycle_delta=0`, `incremental_pending=True`, managed heap **560.2 MB**.
+- Instrumentation check: 0.4.0 calls `ResetSample()` after restoring the GC mode, so the 686.95 ms interval cannot include time accumulated inside the disabled window or the mode-switch call itself.
+- Interpretation: the result strongly supports GC execution as the causal mechanism. It also weakens `big_R` as a deterministic direct ~0.7 s CPU callback because the same route executes during `GCMode=Disabled` without the characteristic stall.
+- Status: `supports hypothesis`; replication requested because the underlying event is intermittent.
+- Next step taken: repeat the same F6 A/B without changing mods/config.
+
+### 2026-09-13 — GK Frame Spike Probe 0.4.0 replicated GC-disabled A/B
+
+- Question: does the GC-disabled suppression / GC-enabled recurrence pattern reproduce, including under unrelated gameplay CPU activity?
+- Scenario: unchanged 32-plugin baseline and same route; two independent 15-second F6 holds in one run.
+- Evidence: supplied 0.4.0 runtime log.
+- Observed result, first hold: started with `incremental_pending_before=True`, `gc_cycle=138`, managed heap **453.6 MB**. The player crossed `big_L` and `big_R` with no characteristic stall. The hold timed out with only **2.2 MB** managed growth and no cycle-count advance. After restore, `FRAME SPIKE #2` measured **685.61 ms wall / 687.50 ms CPU / 100% CPU share**, `GCMode=Enabled`, `incremental_pending=True`, managed heap **535.1 MB**.
+- Observed result, second hold: started with `incremental_pending_before=True`, `gc_cycle=140`, managed heap **465.0 MB**. During `GCMode=Disabled`, the game performed NPC despawns/transitions, bat spawning, pathfinding, and another `witch_hill_down_zone_big_R` traversal. Logged spikes were only **73.00 ms** (85.6% CPU) and **75.97 ms** (100% CPU), both explicitly with `gc_hold_active=True` / `unity_gc_mode=Disabled`. The hold timed out after **18.6 MB** managed growth and no cycle-count advance. After restore, `FRAME SPIKE #5` measured **681.91 ms wall / 671.88 ms CPU / 98.5% CPU share**, `GCMode=Enabled`, `incremental_pending=True`, managed heap **546.1 MB**.
+- Interpretation: across three controlled GC-off windows in two runs, the characteristic ~0.68–0.75 s stall is suppressed while GC is disabled and returns after GC is restored, while the same route and other gameplay CPU work continue. This is sufficient to accept Unity/Mono GC execution as the **immediate causal mechanism** for the residual characteristic freeze class. The first replicated hold accumulated only 2.2 MB, so a large artificial 15-second allocation backlog is not required for recurrence after restore.
+- Scope: this does **not** identify the upstream allocation/retention owner and therefore does not close the overall project root cause. The owner may be the base game/current save-state heap, one mod, several mods, or an interaction.
+- Status: `accepted after retest` for GC as the immediate causal mechanism; upstream owner/root cause remains open.
+- Next step: run a near-clean control with the same save/location and probe, keeping only BepInEx plus the diagnostic probe active and avoiding sleep/save. If the same GC-mediated ~0.7 s class remains, investigate base-game/save-state heap behavior; if it disappears, begin grouped/binary mod isolation.
