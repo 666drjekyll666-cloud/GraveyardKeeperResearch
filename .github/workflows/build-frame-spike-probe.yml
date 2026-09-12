@@ -6,6 +6,7 @@ on:
       - research/frame-spike-probe
       - research/frame-spike-probe-v0.2
       - research/frame-spike-probe-v0.3
+      - research/frame-spike-probe-v0.4
     paths:
       - FrameSpikeProbe.csproj
       - diagnostics/FrameSpikeProbe.cs
