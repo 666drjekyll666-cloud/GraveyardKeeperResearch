@@ -16,6 +16,8 @@ Keep observed facts, hypotheses, root causes, and accepted results separate. Do 
 - One previously supplied runtime cleanup sample reported `Loaded Objects now: 860406` and a **611.2889 ms** total cleanup, including **558.5640 ms** in `MarkObjects`. This proves that Unity unused-asset cleanup can be large enough in this installation to produce a visible main-thread-class stall. It does not by itself prove which trigger owns every observed microfreeze.
 - In the user's ordinary Save Now configuration, `Auto Save = False`, `Save On New Day = False`, and `Backup Saves On Save = False`. Therefore timed Save Now autosaves are not part of the ordinary steady-state baseline in which the residual random microfreezes were reported.
 - A deliberate one-minute Save Now calibration reproduced three near-identical save-triggered stalls: **772.9579 ms**, **759.0385 ms**, and **769.1783 ms** Unity unused-asset cleanup, with roughly 949k–955k loaded objects and ~695–710 ms spent in `MarkObjects`. A normal sleep/save in the same run produced **792.6656 ms**. Save-triggered stalls are therefore a confirmed separate hitch class.
+- `GK Frame Spike Probe 0.1.0` directly captured a user-correlated residual gameplay freeze while mining coal as **695.26 ms wall time** with `focused=True`, `timeScale=1`, and **no managed collections** (`gc0=+0 gc1=+0 gc2=+0`). No save, `Resources.UnloadUnusedAssets`, scene load, or focus transition occurred around that spike. Therefore managed Mono GC and save/unused-asset cleanup are not necessary conditions for the residual gameplay freeze class.
+- The same 0.1.0 run also contained a separate **711.93 ms** gameplay spike with a full managed collection (`gc0=+1 gc1=+1 gc2=+1`) at ~528 MB managed heap in the house-area portion of the run. This is the strongest temporal match to the user's first reported freeze, although that first event was not timestamped exactly. Visually similar residual freezes can therefore occur both with and without a managed collection.
 
 ## Active hypotheses
 
@@ -23,17 +25,23 @@ Keep observed facts, hypotheses, root causes, and accepted results separate. Do 
 
 Day Wheel Quest Markers 1.0.28 removed the previously rhythmic roughly-30-second freezes, but the user still observed roughly two or three random short hitches over several minutes. A control run with Day Wheel removed produced a comparable two or three random hitches over a similar interval.
 
-The one-minute Save Now calibration later proved that saves can generate ~0.75–0.8 s stalls, but this does **not** explain the ordinary residual symptom because timed autosave is disabled in the normal profile. The user also reports freezes outside autosave events.
+The one-minute Save Now calibration proved that saves can generate ~0.75–0.8 s stalls, but this does **not** explain the ordinary residual symptom because timed autosave is disabled in the normal profile. The later frame-spike capture now proves that at least one characteristic residual freeze occurs without a save, without unused-asset cleanup, and without managed Mono GC.
 
-Therefore the remaining sporadic hitch class is still open. Day Wheel and timed Save Now autosave are not attributed as its owner without new evidence.
+Therefore the remaining sporadic hitch class is still open. Day Wheel, timed Save Now autosave, and managed GC as a universal explanation are all excluded as sole owners.
 
-The next useful question is which recurring/high-frequency runtime path remains active in ordinary gameplay and can generate isolated main-thread spikes without an explicit save. Priority should be given to periodic scans, high-frequency Harmony patches, repeated hierarchy searches/reflection/enumeration, scene/subscene cleanup triggers, or mod-owned synchronous I/O that are actually reachable in the user's baseline configuration.
+The next narrow question is whether the directly observed non-GC wall stall is **CPU-bound on the Unity main thread** or instead spends most of its wall interval blocked/waiting/descheduled. `GK Frame Spike Probe 0.2.0` adds only Windows main-thread CPU-time sampling (`GetThreadTimes`) to classify that distinction. A high CPU share will prioritize CPU hot-path instrumentation; a low CPU share will prioritize synchronous I/O, native waits/locks, scheduler/descheduling, or other blocking paths.
+
+### Managed allocation / full-GC component
+
+`FRAME SPIKE #16` in the 0.1.0 capture coincided with a full managed collection and a ~528 MB managed heap. Current p1xel8ted source search finds an explicit `GC.Collect()` only in Save Now's Exit To Desktop branch, which was not active in the captured scenario; owned public mod source search did not find another explicit caller.
+
+Hypothesis: at least some residual-looking freezes may be automatic full Mono collections caused by accumulated allocation rather than explicit `GC.Collect()`. This is not yet a root cause because the allocation owner and collection duration are not measured, and another directly correlated freeze (#17) occurred without any collection.
 
 ### Scene/subscene unload cleanup
 
-The previous IL/runtime probe found `SubsceneLoadManager.UnloadLastScene` and `SubsceneLoadManager.UnloadAllScenes` among direct `Resources.UnloadUnusedAssets()` callers. Because the save-path explanation is now separated from the ordinary baseline, these scene/subscene cleanup paths remain eligible suspects for non-save stalls if they can be shown to run during ordinary movement/dialogue/location transitions.
+The previous IL/runtime probe found `SubsceneLoadManager.UnloadLastScene` and `SubsceneLoadManager.UnloadAllScenes` among direct `Resources.UnloadUnusedAssets()` callers. Because the save-path explanation is now separated from the ordinary baseline, these scene/subscene cleanup paths remain eligible suspects only for stalls that actually coincide with a scene/subscene cleanup trigger.
 
-No root-cause status is assigned yet: a caller reference alone is insufficient. The next source/runtime step is to identify when these methods are invoked in normal gameplay and whether their invocation coincides with the residual hitch class.
+The 0.1.0 coal-mining freeze does **not** support this hypothesis: no scene load or unused-assets cleanup was logged around `FRAME SPIKE #17`.
 
 ### Keeper's Lantern bounded global-scan fallbacks
 
@@ -50,6 +58,8 @@ These are **not** accepted as causes of the general dialogue/gameplay symptom. T
 - **Day Wheel Quest Markers as the sole cause of the remaining random microfreezes:** ruled out by the 1.0.28 control comparison. With the recurring Day Wheel defect removed, a similar low count of random short hitches remained both with Day Wheel present and with Day Wheel removed.
 - **Repeated FlowCanvas graph parsing as a normal gameplay requirement for Day Wheel after the persistent-manifest line:** ruled out by 1.0.26+ architecture and runtime evidence. 1.0.28 loaded the manifest behind loading in 6.16 ms, skipped FlowCanvas parsing, performed no runtime structural rebuild, and used cheap rebinds for later NPC discoveries.
 - **Timed Save Now autosave as the trigger for the ordinary baseline random hitches:** ruled out by configuration state. Autosave is disabled in the user's ordinary profile; the one-minute autosaves were introduced only for diagnostic calibration.
+- **Managed Mono GC as a necessary cause of every residual characteristic freeze:** ruled out by `FRAME SPIKE #17`, a directly user-correlated **695.26 ms** gameplay stall with `gc0=+0 gc1=+0 gc2=+0`.
+- **`Resources.UnloadUnusedAssets` / save cleanup as the direct trigger of the captured coal-mining freeze:** no such cleanup/save event occurs around `FRAME SPIKE #17` in the supplied log.
 - **Direct `Resources.UnloadUnusedAssets` call in the inspected current source of `BetterSaveSoulRebalance`, `SpecializedStorage`, or `KeepersLantern`:** no such caller is present in the inspected production source. This does not rule out the game itself, Unity internals, or third-party mods as the owner of any observed cleanup pass.
 - **Save Now's explicit `GC.Collect()` + `Resources.UnloadUnusedAssets()` exit code as the ordinary gameplay trigger:** current upstream source confines that explicit pair to the Exit To Desktop path. Normal Save Now auto/manual/new-day saves instead call `PlatformSpecific.SaveGame`, so any cleanup during those saves must be attributed to the downstream game save path unless separate evidence proves otherwise.
 
@@ -137,6 +147,10 @@ Alchemy Research Redux:
 - both use synchronous JSON serialization/file writes; `LastMix.SaveToFile()` directly uses `File.WriteAllText`, and the recipe persistence path does the same.
 
 The calibration shows that the dominant observed stall is the downstream Unity cleanup, not enough evidence to blame the small additional Alchemy JSON writes. No production fix in Save Now or Alchemy Research Redux is justified for this save-stall class from current evidence.
+
+### Rest In Patches movement source inspection
+
+Current upstream `Rest In Patches 0.1.5` source was checked because the runtime configuration has `Smooth Player Movement = True`. The smoothing patch changes the player `Rigidbody2D` interpolation mode and wraps `RoundAndSortComponent.DoUpdateStuff`; the only hierarchy lookup in the wrapper (`GetComponentInChildren<SortingGroup>`) is gated to the player object. This is a recurring call worth remembering, but the current source does not provide evidence for a random ~0.7 s global stall and it is not assigned ownership without runtime correlation.
 
 ## Measurement notes
 
