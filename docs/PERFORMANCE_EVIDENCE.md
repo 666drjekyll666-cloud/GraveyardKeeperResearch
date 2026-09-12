@@ -12,6 +12,8 @@ Keep observed facts, hypotheses, root causes, and accepted results separate. Do 
 - The symptom is especially noticeable during dialogue, but is not limited to dialogue.
 - Cross-mod diagnosis belongs in this repository; production fixes belong in the repository that owns the proven defect.
 - The investigation has already separated at least one Day Wheel Quest Markers performance defect from the remaining sporadic baseline hitches; therefore no single mod is accepted as the cause of all reported freezes.
+- A previously supplied runtime probe found six references/caller paths capable of reaching `Resources.UnloadUnusedAssets()`, including `PlatformSpecific.SaveGameDataToSlot`, `SubsceneLoadManager.UnloadLastScene`, `SubsceneLoadManager.UnloadAllScenes`, `SleepGUI`, `WaitingGUI`, and Save Now-related code.
+- One previously supplied runtime cleanup sample reported `Loaded Objects now: 860406` and a **611.2889 ms** total cleanup, including **558.5640 ms** in `MarkObjects`. This proves that Unity unused-asset cleanup can be large enough in this installation to produce a visible main-thread-class stall. It does not by itself prove which trigger owns every observed microfreeze.
 
 ## Active hypotheses
 
@@ -22,6 +24,20 @@ Day Wheel Quest Markers 1.0.28 removed the previously rhythmic roughly-30-second
 Therefore the remaining sporadic hitch class is still open. Day Wheel is not attributed as its owner without new evidence.
 
 A useful next question is whether those sporadic hitches correlate with Unity-wide cleanup/resource-management work, another mod's synchronous main-thread work, or game/engine behavior. Correlation must be established from runtime timing or source before assigning ownership.
+
+### Save-path cleanup chain
+
+Current upstream source inspection establishes a concrete trigger chain worth testing:
+
+- Save Now enables timed auto-save and routes auto/manual/new-day saves through the game's `PlatformSpecific.SaveGame(...)` path;
+- the previously supplied runtime probe found `PlatformSpecific.SaveGameDataToSlot` among direct `Resources.UnloadUnusedAssets()` call paths;
+- Alchemy Research Redux patches `PlatformSpecific.SaveGame` and, on every save, synchronously serializes/writes its recipe and last-mix JSON files (`File.WriteAllText`).
+
+Save Now itself also contains a direct `GC.Collect()` + `Resources.UnloadUnusedAssets()` call, but current source places that direct call specifically in its **Exit To Desktop** path. It is therefore not evidence for ordinary mid-game stalls.
+
+Hypothesis: some residual gameplay stalls are save-triggered. The dominant cost may be the base-game/Unity unused-asset cleanup reached by the save path, with third-party synchronous save postfix work adding smaller extra cost. This is not yet a root cause for the general symptom because the remaining random hitches have not yet been event-correlated to save timestamps, and scene-unload paths can invoke the same Unity cleanup independently.
+
+A high-information low-cost test is to temporarily shorten Save Now's auto-save interval to one minute for a brief controlled run while leaving the rest of the mod set unchanged. If the visible hitch and `UnloadUnusedAssets` cleanup become phase-locked to the one-minute save cadence, the save-triggered component is confirmed. If cleanup occurs without the hitch or hitches occur off-cadence, continue with the independent scene-unload path.
 
 ### Keeper's Lantern bounded global-scan fallbacks
 
@@ -38,6 +54,7 @@ These are **not** accepted as causes of the general dialogue/gameplay symptom. T
 - **Day Wheel Quest Markers as the sole cause of the remaining random microfreezes:** ruled out by the 1.0.28 control comparison. With the recurring Day Wheel defect removed, a similar low count of random short hitches remained both with Day Wheel present and with Day Wheel removed.
 - **Repeated FlowCanvas graph parsing as a normal gameplay requirement for Day Wheel after the persistent-manifest line:** ruled out by 1.0.26+ architecture and runtime evidence. 1.0.28 loaded the manifest behind loading in 6.16 ms, skipped FlowCanvas parsing, performed no runtime structural rebuild, and used cheap rebinds for later NPC discoveries.
 - **Direct `Resources.UnloadUnusedAssets` call in the inspected current source of `BetterSaveSoulRebalance`, `SpecializedStorage`, or `KeepersLantern`:** no such caller is present in the inspected production source. This does not rule out the game itself, Unity internals, or third-party mods as the owner of any observed cleanup pass.
+- **Save Now's explicit `GC.Collect()` + `Resources.UnloadUnusedAssets()` exit code as the ordinary gameplay trigger:** current upstream source confines that explicit pair to the Exit To Desktop path. Normal Save Now auto/manual/new-day saves instead call `PlatformSpecific.SaveGame`, so any cleanup during those saves must be attributed to the downstream game save path unless separate evidence proves otherwise.
 
 ## Proven root causes
 
@@ -92,6 +109,25 @@ Inspected accepted production source of:
 No direct `Resources.UnloadUnusedAssets` caller was found in these production sources. `SpecializedStorage` is event/UI-bound rather than a recurring global-resource cleanup owner; its recipe suitability cache is built lazily and retained. `BetterSaveSoulRebalance` applies deterministic data patches / narrow craft hooks and does not contain Unity resource cleanup calls. `KeepersLantern` has the bounded global-scan fallbacks recorded above, so it remains eligible for a targeted runtime check only when their activation conditions match a freeze.
 
 This source inspection narrows ownership but does not identify the owner of a Unity cleanup pass that might be initiated by the base game or a third-party mod whose source is outside the owned repositories.
+
+### p1xel8ted save-path source inspection
+
+Current upstream `p1xel8ted/Graveyard-Keeper-Mods` source was inspected for Save Now and Alchemy Research Redux.
+
+Save Now:
+
+- timed auto-save is configurable and defaults on;
+- auto-save, manual save, and new-day save all call `PlatformSpecific.SaveGame`;
+- the source includes debug messages around auto-save start/completion that can be used for low-cost runtime correlation;
+- its explicit `GC.Collect()` + `Resources.UnloadUnusedAssets()` is in the Exit To Desktop branch, not the normal timed save branch.
+
+Alchemy Research Redux:
+
+- patches `PlatformSpecific.SaveGame` with a postfix;
+- every save calls `AlchemyRecipe.SaveRecipesToFile()` and `LastMix.SaveToFile()`;
+- both use synchronous JSON serialization/file writes; `LastMix.SaveToFile()` directly uses `File.WriteAllText`, and the recipe persistence path does the same.
+
+This establishes a plausible compounded save path, but no production fix is justified until runtime correlation identifies which cost actually produces the user's residual hitch.
 
 ## Measurement notes
 
