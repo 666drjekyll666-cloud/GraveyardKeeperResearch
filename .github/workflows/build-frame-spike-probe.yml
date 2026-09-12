@@ -7,6 +7,7 @@ on:
     paths:
       - FrameSpikeProbe.csproj
       - diagnostics/FrameSpikeProbe.cs
+      - nuget.config
       - .github/workflows/build-frame-spike-probe.yml
 
 concurrency:
