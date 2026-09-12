@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - research/frame-spike-probe
+      - research/frame-spike-probe-v0.2
     paths:
       - FrameSpikeProbe.csproj
       - diagnostics/FrameSpikeProbe.cs
