@@ -82,3 +82,26 @@ Do not record routine repository inspection as an in-game test. Do not rewrite a
 - SHA-256: `705acfc354c19878267ab5ec2bc73ac11a9c99420adb7c1e61e509d06a8b11fc`.
 - Status: `inconclusive` until runtime capture.
 - Next step: run the ordinary problematic gameplay scenario with Save Now returned to its normal autosave-off configuration and this probe added; submit the resulting BepInEx log plus whether/when visible non-save hitches were noticed.
+
+### 2026-09-13 — GK Frame Spike Probe 0.1.0 runtime capture
+
+- Question: do user-perceived residual non-save freezes require a managed Mono GC collection?
+- Scenario: ordinary gameplay with Save Now autosave disabled; user reported two characteristic freezes, one in/around the house and a second while mining coal, and supplied the log immediately after the second event.
+- Evidence: `GK Frame Spike Probe (Diagnostic) 0.1.0` runtime log.
+- Observed result: two large steady-state gameplay spikes stand out after load. `FRAME SPIKE #16` measured **711.93 ms**, `focused=True`, `timeScale=1`, managed heap **528.1 MB**, with `gc0=+1 gc1=+1 gc2=+1`. It occurred in the house-area portion of the run and is the strongest temporal match to the user's first reported freeze, although the user did not timestamp that first event exactly. `FRAME SPIKE #17` measured **695.26 ms**, `focused=True`, `timeScale=1`, managed heap **613.9 MB**, with **`gc0=+0 gc1=+0 gc2=+0`** while the player was repeatedly mining coal. The log was submitted immediately after this second perceived freeze, so #17 is the direct correlation target.
+- Additional negative evidence: no `Resources.UnloadUnusedAssets` / `Unloading ... unused Assets` runtime cleanup, save event, scene load, or focus transition occurs around #17. The spike is logged before the subsequent coal depletion/replacement/drop lines, so the coal object's completion itself is not established as the trigger.
+- Interpretation: managed GC is **not necessary** for the residual characteristic gameplay freeze class. At least one directly correlated ~695 ms freeze occurred with no managed collection. #16 separately shows that a visually similar ~712 ms freeze can coincide with a full managed collection, so the residual symptom may still be composite. A common upstream allocator/owner is not established.
+- Status: `rules out` "all residual freezes are Mono GC"; `supports hypothesis` that at least one independent non-GC main-thread stall remains.
+- Next step: classify the non-GC stall as CPU-bound versus blocked/descheduled by measuring Unity main-thread CPU time across the same wall-clock spike interval.
+
+### 2026-09-13 — GK Frame Spike Probe 0.2.0 handoff
+
+- Question: during a residual non-GC ~0.7 s stall, is the Unity main thread actively consuming CPU or spending most of the wall interval blocked/waiting/descheduled?
+- Diagnostic delta from 0.1.0: preserves the same wall-clock and GC sampling and adds Windows `GetThreadTimes` for the current Unity main thread. Spike-only output adds `main_thread_cpu_ms`, `non_cpu_wall_ms`, and `cpu_share_pct`. No object scans, hierarchy enumeration, stack traces, synchronous file I/O, or per-frame log writes were added.
+- Development branch: `research/frame-spike-probe-v0.2`.
+- Frozen diagnostic source: `diagnostic/frame-spike-probe-0.2.0` at `e67d2240eae00ad03a64d43481d1a5f517ab809a`.
+- Build evidence: GitHub Actions run `34722251988` on `ubuntu-latest`; restore, Release build, hash, and artifact upload succeeded.
+- Artifact: `GKFrameSpikeProbe.dll`.
+- SHA-256: `3cb6a6efcf3c2aa16be9679b06e78fc9616ef9c3c774b9979bec7ec78f7c3151`.
+- Status: `inconclusive` until runtime capture.
+- Next step: replace 0.1.0 with 0.2.0, leave the normal mod/config baseline unchanged, and capture another characteristic freeze. A high `cpu_share_pct` will prioritize CPU hot-path instrumentation; a low share will prioritize blocking/I/O/scheduler/native-wait investigation.
