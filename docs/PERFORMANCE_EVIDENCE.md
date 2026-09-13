@@ -16,7 +16,9 @@ Keep observed facts, hypotheses, root causes, and accepted results separate. Do 
 - `GK Frame Spike Probe 0.2.0` directly classified a characteristic Witch-Hill-road freeze as **692.09 ms wall / 687.50 ms Unity-main-thread CPU / 99.3% CPU share**. Blocking, synchronous I/O wait, scheduler descheduling, or a native wait is therefore not the dominant mechanism for that captured event.
 - `GK Frame Spike Probe 0.3.0` confirmed that Unity incremental GC is enabled (`isIncremental=True`, `GCMode=Enabled`, target slice **3 ms**) and that a directly correlated **714.88 ms wall / 703.13 ms main-thread CPU / 98.4% CPU** freeze occurred while an incremental GC cycle was still pending afterward (`incremental_pending=True`).
 - `witch_hill_down_zone_big_R` is a repeatable temporal correlate, but repeated passes through the same zone can complete without a characteristic ~0.7 s freeze. The zone/FlowScript is therefore not accepted as a deterministic direct CPU root cause.
-- A near-clean control using the same developed save with **only BepInEx plus GK Frame Spike Probe 0.4.0** loaded produced no characteristic ~0.68–0.75 s steady-state freeze during an extended ordinary gameplay run. After `OnGameStartedPlaying`, the probe logged 12 spikes from **52.40 ms to 131.68 ms**; the large 1.3–2.5 s events were confined to save loading. The run included repeated `witch_hill_down_zone_big_L` / `big_R` crossings, dialogue, vendor UI, tool work, NPC schedule activity, bat/slime spawning and pathfinding. This strongly disfavors the base game/current save alone as a sufficient explanation and materially shifts the upstream-owner search toward the removed gameplay mods or their interactions.
+- A near-clean control using the same developed save with **only BepInEx plus GK Frame Spike Probe 0.4.0** loaded produced no characteristic ~0.68–0.75 s steady-state freeze during an extended ordinary gameplay run. After `OnGameStartedPlaying`, the probe logged 12 spikes from **52.40 ms to 131.68 ms**; the large 1.3–2.5 s events were confined to save loading. The run included repeated `witch_hill_down_zone_big_L` / `big_R` crossings, dialogue, vendor UI, tool work, NPC schedule activity, bat/slime spawning and pathfinding. This strongly disfavors the base game/current save alone as a sufficient explanation.
+- Grouped binary isolation narrowed the residual class to **The Merchant's Promise 1.0.0**. The mod reproduced the target class by itself with only the diagnostic probe present: **686.88 ms wall / 656.25 ms Unity-main-thread CPU / 95.5% CPU**, `incremental_pending=True`, managed heap **549.8 MB**. No Merchant trade was active at the captured moment.
+- Food & Drink Rebalance 1.2.0 alone did not reproduce the characteristic class during the tested interval, and Better Save Soul Rebalance 1.1.1 alone likewise did not reproduce it despite broad ordinary gameplay coverage.
 
 ## Confirmed causal mechanism for the residual ~0.7 s class
 
@@ -35,26 +37,31 @@ Across **three controlled GC-disabled windows in two runtime runs**, the same pa
 
 **Accepted interpretation:** Unity/Mono garbage-collector execution is a **confirmed immediate causal mechanism** for the characteristic residual ~0.68–0.75 s freeze class in this installation. This is stronger than temporal correlation: disabling GC suppresses the characteristic event during the controlled window and restoring GC repeatedly allows the same main-thread CPU stall to recur.
 
-This is **not yet the final project root cause**, because the upstream owner is still unknown. The unresolved question is which gameplay mod, mod family, or mod interaction creates the heap/allocation/marking conditions that make Boehm consume roughly 0.7 s on the Unity main thread.
+The upstream sufficient mod owner is now isolated to **The Merchant's Promise 1.0.0**. The source-level mechanism inside that third-party mod remains unknown and is intentionally not pursued further because the user will simply stop using the mod.
 
-## Active hypotheses / next isolation question
+## Owner isolation — closed
 
-### Mod-driven allocation / heap-pressure owner
+The grouped isolation sequence established:
 
-The near-clean control materially narrows the search. Current priority owner classes are:
+- near-clean control: negative;
+- Split A: negative;
+- Split B: positive;
+- B2: positive;
+- C1 (`Merchant + Food + Better Soul`): positive;
+- Food alone: negative during the tested interval;
+- `Merchant + Better Soul`: positive at **713.43 ms wall / 718.75 ms main-thread CPU / 100% CPU**;
+- Better Soul alone: negative during a broad tested interval, with post-start events topping out around **114 ms**;
+- Merchant alone: positive at **686.88 ms wall / 656.25 ms main-thread CPU / 95.5% CPU**.
 
-- one gameplay mod with sustained or bursty managed allocation;
-- one gameplay mod that retains managed objects and enlarges the live graph Boehm must mark;
-- several mods whose independent allocations combine to cross the expensive-GC threshold;
-- an interaction between mod families that does not reproduce when all ordinary mods are absent.
+**Accepted owner conclusion:** The Merchant's Promise 1.0.0 is sufficient by itself to create the conditions under which the characteristic residual GC freeze reproduces. This closes the mod-owner search for this hitch class.
 
-The base game/current developed save by itself is now **strongly disfavored as a sufficient owner**, because the same save, route, NPC schedules, dialogue, vendors, tool actions and spawned mobs ran with only the probe and did not produce the characteristic class. Because the event is stochastic, one finite negative run does not mathematically rule out a much rarer vanilla occurrence.
+**Practical remediation:** disable/remove The Merchant's Promise 1.0.0. No fork, binary modification, replacement implementation, or further source-level investigation is planned unless the user explicitly reopens the issue.
 
-The next cheapest high-information test is **grouped/binary mod isolation**, keeping dependency families together and otherwise preserving the same save/scenario/probe. Do not sleep/save during isolation runs. Start from roughly half of the ordinary gameplay mods plus the probe; if the characteristic class reproduces, split that enabled half again. If it does not, test the complementary half. If neither half reproduces, investigate a cross-group interaction rather than declaring all individual mods clean.
+If the same characteristic ~0.7 s freeze later reproduces with The Merchant's Promise absent, treat that as new contradictory runtime evidence and reopen isolation from the then-current mod baseline rather than assuming every future hitch belongs to this owner.
 
 ### Witch Hill zone / FlowScript
 
-The Witch Hill boundary remains useful as a short reproduction route, but current A/B evidence weakens the hypothesis that the zone callback itself consumes ~0.7 s. The same zone executes while GC is disabled and in the near-clean mod-free control without producing the characteristic stall. It may still contribute allocations or merely provide a convenient location/timing for reproduction; no ownership is assigned without further evidence.
+The Witch Hill boundary remains useful as a short reproduction route, but current A/B evidence weakens the hypothesis that the zone callback itself consumes ~0.7 s. The same zone executes while GC is disabled and in the near-clean mod-free control without producing the characteristic stall. It may still merely provide convenient timing for reproduction; no direct ownership is assigned.
 
 ### Scene/subscene unload cleanup
 
@@ -62,13 +69,15 @@ The Witch Hill boundary remains useful as a short reproduction route, but curren
 
 ## Ruled-out / separated explanations
 
-- **Day Wheel Quest Markers as the sole owner of the remaining random microfreezes:** ruled out by control comparison after its rhythmic allocation defect was fixed.
+- **Day Wheel Quest Markers as the sole owner of the remaining random microfreezes:** ruled out by control comparison after its rhythmic allocation defect was fixed and by positive reproduction without Day Wheel.
 - **Day Wheel 1.0.30 navigation-evaluator allocation cleanup as the missing fix:** a speculative 1.0.31 candidate removed recurring reflection argument-array/boxing and phrase-enumeration churn without changing reminder semantics, yet the normal 32-plugin run still produced characteristic **726.22 ms / 99.0% CPU** and **710.76 ms / 98.9% CPU** steady-state spikes. Do not promote 1.0.31 as a performance fix for the residual class.
 - **Repeated Day Wheel FlowCanvas graph parsing in normal gameplay:** ruled out by the persistent-manifest architecture and runtime evidence.
+- **Food & Drink Rebalance 1.2.0 as a required owner of the target class:** ruled out as necessary because `Merchant + Better Soul` reproduced without it; Food alone also did not reproduce during the tested interval.
+- **Better Save Soul Rebalance 1.1.1 as a required owner of the target class:** ruled out as necessary because Merchant alone reproduced; Better Soul alone did not reproduce during the tested interval.
 - **Timed Save Now autosave as the trigger for the ordinary residual class:** ruled out by normal configuration and controlled save calibration.
-- **Blocking/waiting/descheduling as the dominant mechanism of the characteristic residual freeze:** ruled out by ~98–100% main-thread CPU share in multiple directly correlated captures.
+- **Blocking/waiting/descheduling as the dominant mechanism of the characteristic residual freeze:** ruled out by ~95–100% main-thread CPU share in multiple directly correlated captures.
 - **`Resources.UnloadUnusedAssets` / save cleanup as the direct trigger of the characteristic road/coal residual class:** no such cleanup is present around the directly correlated events.
-- **Witch Hill `big_R` FlowScript as a deterministic ~0.7 s direct CPU callback:** contradicted by successful `big_R` traversals while GC is disabled, by earlier same-run passes without the characteristic spike, and by repeated near-clean `big_L`/`big_R` traversals without the characteristic class. It remains only a possible upstream allocator/trigger candidate.
+- **Witch Hill `big_R` FlowScript as a deterministic ~0.7 s direct CPU callback:** contradicted by successful `big_R` traversals while GC is disabled, by earlier same-run passes without the characteristic spike, and by repeated near-clean `big_L`/`big_R` traversals without the characteristic class.
 
 ## Proven root causes already closed
 
@@ -93,6 +102,14 @@ Status: root cause confirmed for the rhythmic Day Wheel component.
 The game save pipeline can reach `Resources.UnloadUnusedAssets()`. Controlled one-minute Save Now triggering produced **772.9579 ms**, **759.0385 ms**, and **769.1783 ms** cleanup stalls; a normal sleep/save produced **792.6656 ms**. Dominant time was `MarkObjects` with roughly 949k–955k loaded Unity objects.
 
 Status: root cause confirmed for save-triggered stalls; separate from the ordinary residual GC-mediated class.
+
+### The Merchant's Promise: residual ~0.7 s GC freeze owner
+
+Owner: third-party mod **The Merchant's Promise 1.0.0**.
+
+Controlled single-plugin isolation reproduced the characteristic event with only The Merchant's Promise and the diagnostic probe loaded: **686.88 ms wall / 656.25 ms main-thread CPU / 95.5% CPU**, `incremental_pending=True`, managed heap **549.8 MB**. Better Save Soul alone and Food & Drink Rebalance alone did not reproduce the target during their tested intervals.
+
+Status: **owner confirmed / practical issue closed by disabling the mod**. Source-level internal root cause inside the third-party mod was not established and is intentionally left uninvestigated.
 
 ## Source-inspection notes retained
 
