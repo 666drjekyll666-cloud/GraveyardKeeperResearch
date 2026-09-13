@@ -173,6 +173,27 @@ Interpretation: the sufficient owner set is narrowed from seven plugins to these
 
 ### Source-guided suspect inside C1
 
-`Food & Drink Rebalance 1.2.0` is now a concrete hypothesis because its exact accepted `baseline/1.2.0-accepted` source patches `CraftComponent.DoAction`, a recurring action/crafting path. The prefix performs reflective member access, LINQ/string work, creates a container-name array, calls `GetMethods`, and may invoke reflected methods with a new argument array while checking the Well Fed resource. This is a plausible recurring allocation source, especially because the captured event followed a mushroom craft/activity, but it is **not yet root cause**: the freeze is GC-mediated and the log does not attribute GC cost to that prefix.
+`Food & Drink Rebalance 1.2.0` was a concrete hypothesis because its exact accepted `baseline/1.2.0-accepted` source patches `CraftComponent.DoAction`, a recurring action/crafting path. The prefix performs reflective member access, LINQ/string work, creates a container-name array, calls `GetMethods`, and may invoke reflected methods with a new argument array while checking the Well Fed resource. This was a plausible recurring allocation source, especially because the captured event followed a mushroom craft/activity, but required a single-plugin A/B before any causal conclusion.
 
-The next cheapest discriminating test is therefore not a generic 2+1 split: run **Food & Drink Rebalance 1.2.0 alone plus the probe**. If the characteristic class reproduces, a single-plugin sufficient owner is established and the next step is a narrow source/runtime A/B in `FoodAndDrinkRebalance`. If it does not, test the complementary pair (`The Merchant's Promise` + `Better Save Soul Rebalance`) plus the probe.
+## Split C1a — Food & Drink Rebalance alone
+
+Enabled ordinary plugin:
+
+- Food & Drink Rebalance 1.2.0
+
+Plus GK Frame Spike Probe 0.4.0.
+
+Result: **negative for the characteristic class during the tested interval**.
+
+The probe was correctly loaded (`2 plugins to load`). After `OnGameStartedPlaying`, the run exercised ordinary gathering/craft events, repeated house teleports, Witch Hill crossings, NPC schedules, a large bat spawn/pathfinding period, berry gathering, furnace completion, craft GUI at the cooking table and oven, axe work, and combat. No ~0.68–0.75 s steady-state event occurred. Post-start probe events were small-to-moderate; the largest ordinary steady-state event was about 125.88 ms, with later events around 50–107 ms. The large ~2.07 s event occurred during load before `OnGameStartedPlaying` and is not the target gameplay class.
+
+Interpretation: Food & Drink Rebalance 1.2.0 is **not shown sufficient by itself** to reproduce the target class, and the specific `CraftComponent.DoAction` single-owner hypothesis is substantially weakened because the run exercised action/craft paths without the characteristic stall. This is still a finite stochastic negative test, not proof that the mod can never contribute.
+
+The next cheapest discriminating test is the complementary pair:
+
+- The Merchant's Promise 1.0.0
+- Better Save Soul Rebalance 1.1.1
+
+plus GK Frame Spike Probe 0.4.0.
+
+If that pair reproduces, Food & Drink Rebalance is not necessary for the target reproduction and the search narrows to Merchant vs Better Save Soul (or their interaction). If the pair is negative, test Food + one of the two remaining plugins to identify which interaction is sufficient.
