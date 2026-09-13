@@ -2,7 +2,7 @@
 
 Focused evidence record for the characteristic residual ~0.68–0.75 s GC-mediated gameplay freeze in Graveyard Keeper 1.407.
 
-This document records the final owner-isolation stage. The immediate stall mechanism remains the already accepted Unity/Mono Boehm GC execution path. The purpose here is to identify the upstream mod owner, not to claim a source-level root cause before the binary/source is inspected.
+This document records the final owner-isolation stage. The immediate stall mechanism remains the already accepted Unity/Mono Boehm GC execution path. The purpose here is to identify the upstream mod owner; source-level diagnosis of this third-party mod is intentionally not pursued further.
 
 ## Fixed conditions
 
@@ -105,38 +105,24 @@ Therefore:
 - Better Save Soul Rebalance, Food & Drink Rebalance, Day Wheel Quest Markers, and the other removed mods are not necessary for this target reproduction;
 - The Merchant's Promise is the upstream **owner of the sufficient reproducing condition** for the current investigation.
 
-This does **not yet identify the source-level root cause**. The already proven immediate mechanism remains Unity/Mono Boehm GC execution. The unresolved source question is what The Merchant's Promise 1.0.0 changes or retains such that GC can consume ~0.7 s during unrelated ordinary gameplay.
+This does **not identify the source-level root cause inside The Merchant's Promise**. The already proven immediate mechanism remains Unity/Mono Boehm GC execution. The exact internal allocation/retention/hook behavior that makes GC expensive is unknown and, by user decision, will not be investigated further because this is a third-party mod that will simply no longer be used.
 
 ## Current external/source evidence
-
-The public Nexus page for The Merchant's Promise says:
-
-- the mod was uploaded 2026-07-27 as version 1;
-- it adjusts Merchant crate payout according to banked marketing/fame points;
-- it also scales the trade report while that window is open;
-- it 'hooks one method and identifies it by structure rather than by name';
-- it claims the hook only adjusts payout calculation and is safe to add/remove.
 
 The runtime log identifies the installed target as the compiler-generated method:
 
 `FlowCanvas.Nodes.Flow_ProcessMerchantTraiding+<>c__DisplayClass0_0::<RegisterPorts>b__0`
 
-No public GitHub source repository for this mod was found through the connected GitHub search or ordinary web search. Nexus publishes the binary but its page does not expose source code. The Nexus permissions page also states that modification/reupload requires the author's permission, so no production modification of the third-party binary should be attempted without source/permission.
+No public GitHub source repository for this mod was found through the connected GitHub search. No production modification of the third-party mod is planned.
 
-A recurring Unity message `Fallback handler could not load library .../Mono/data-XXXXXXXX.dll` appears immediately around Merchant hook installation in the tested logs. This is recorded only as an observation, **not** as causal evidence: Unity can emit analogous `data-*` fallback messages for dynamically generated/non-platform assemblies, and external Unity reports explicitly describe such messages as potentially harmless.
+## Investigation disposition
 
-## Next narrow question
+The performance investigation is **closed at owner level** for this hitch class.
 
-Inspect the exact installed `MerchantsPromise` 1.0.0 assembly to establish:
+Practical remediation:
 
-1. which hook/detour library and API it uses;
-2. whether the hook object/delegate is strongly retained for the intended lifetime;
-3. what reflection/IL/structural method-discovery objects are retained after startup;
-4. whether startup discovery or detour installation creates a large persistent managed graph;
-5. whether the trade hook can be replaced by a narrower Harmony patch or other implementation that preserves behavior without the GC regression.
+- disable/remove **The Merchant's Promise 1.0.0**;
+- do not spend further diagnostic or CI effort on its internal implementation unless the user explicitly reopens that question;
+- if the characteristic ~0.7 s freeze still reproduces later with The Merchant's Promise absent, treat that as a new contradictory runtime result and reopen isolation from the current mod baseline rather than assuming this conclusion covers every future hitch.
 
-Until the exact DLL/source is inspected, candidates such as RuntimeDetour lifetime, reflection retention, or dynamic-method machinery remain **hypotheses**, not root cause.
-
-## Immediate remediation
-
-Disabling The Merchant's Promise 1.0.0 removes the only mod proven necessary for the single-plugin reproduction and is the current safe workaround while source-level diagnosis continues.
+No source-level fix, fork, binary modification, or replacement implementation is planned.
