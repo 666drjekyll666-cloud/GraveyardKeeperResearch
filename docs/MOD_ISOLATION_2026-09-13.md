@@ -144,23 +144,35 @@ The probe was correctly loaded, and the user immediately identified the event as
 
 Interpretation: the target class is reproducible using B2 alone. B1 is not necessary for this reproduction. The upstream owner or sufficient interaction is now narrowed from 15 ordinary plugins to these seven B2 plugins.
 
-## Next split: C1
+## Split C1 — three gameplay-data/logic mods
 
-Test the three gameplay-data/logic mods together, plus GK Frame Spike Probe 0.4.0:
+Enabled ordinary plugins:
 
 - The Merchant's Promise 1.0.0
 - Food & Drink Rebalance 1.2.0
 - Better Save Soul Rebalance 1.1.1
 
-Keep disabled for this run:
+Plus GK Frame Spike Probe 0.4.0.
 
-- Configuration Manager 18.4.1
-- New Game at Bottom! 2.2.11
-- No Intros! 2.2.11
-- Rain & Wind Volume Controls 1.1.0
+Result: **positive**; characteristic freeze again reproduced almost immediately.
 
-Decision rule:
+Direct capture:
 
-- If C1 reproduces, narrow inside these three.
-- If C1 is negative after a comparable ordinary interval, test the complementary four as C2.
-- Do not infer guilt from the function/name of any individual plugin before that split is resolved and its current repository/source has been inspected.
+- `FRAME SPIKE #6`
+- wall: **701.34 ms**
+- Unity-main-thread CPU: **703.13 ms**
+- CPU share: **100%**
+- `gc_cycle_delta=0`
+- `incremental_pending=True`
+- managed heap: **555.2 MB**
+- focused, `timeScale=1`
+
+The user immediately identified this event as the characteristic freeze. It occurred immediately after ordinary mushroom-gathering activity (`Craft mushroom_spawn` / drop collection). Log adjacency alone is not treated as proof of which plugin executed the causal allocation path.
+
+Interpretation: the sufficient owner set is narrowed from seven plugins to these three. Configuration Manager, New Game at Bottom, No Intros, and Rain & Wind Volume Controls are not necessary for reproduction.
+
+### Source-guided suspect inside C1
+
+`Food & Drink Rebalance 1.2.0` is now a concrete hypothesis because its exact accepted `baseline/1.2.0-accepted` source patches `CraftComponent.DoAction`, a recurring action/crafting path. The prefix performs reflective member access, LINQ/string work, creates a container-name array, calls `GetMethods`, and may invoke reflected methods with a new argument array while checking the Well Fed resource. This is a plausible recurring allocation source, especially because the captured event followed a mushroom craft/activity, but it is **not yet root cause**: the freeze is GC-mediated and the log does not attribute GC cost to that prefix.
+
+The next cheapest discriminating test is therefore not a generic 2+1 split: run **Food & Drink Rebalance 1.2.0 alone plus the probe**. If the characteristic class reproduces, a single-plugin sufficient owner is established and the next step is a narrow source/runtime A/B in `FoodAndDrinkRebalance`. If it does not, test the complementary pair (`The Merchant's Promise` + `Better Save Soul Rebalance`) plus the probe.
