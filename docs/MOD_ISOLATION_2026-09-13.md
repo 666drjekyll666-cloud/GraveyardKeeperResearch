@@ -36,7 +36,7 @@ Enabled ordinary mods/components:
 - Keeper's Lantern - Save Now Compatibility 1.0.12
 - Alchemy Research Redux 0.1.8
 - Decomp Delight! 0.1.9
-- I Neeeed Sticks! 1.6.12
+- I Neeed Sticks! 1.6.12
 - Rest In Patches 0.1.5
 - Queue Everything! 2.2.0
 - Save Now! 2.5.14
@@ -94,9 +94,9 @@ The user immediately identified this event as the characteristic freeze. It occu
 
 Interpretation: the target class is reproducible without Split A and without Max Buttons Redux. The upstream owner or sufficient interaction is therefore inside the 15 actually loaded Split-B plugins. Split A and Max Buttons Redux are not necessary for this reproduction.
 
-## Next binary split: B1
+## Split B1 — eight-plugin subgroup
 
-Enable only the following eight ordinary plugins plus GK Frame Spike Probe 0.4.0:
+Enabled ordinary plugins:
 
 - HoldToSprint 1.0.3
 - GYK Quick Stack 1.0.0
@@ -107,7 +107,15 @@ Enable only the following eight ordinary plugins plus GK Frame Spike Probe 0.4.0
 - GYK Recipe Pin 0.3.0
 - GYK Teleport Stone Quick Slot 1.0.0
 
-Keep these complementary seven disabled for this run:
+Result: **subjectively negative but not instrumented**.
+
+The user played a substantial ordinary interval and reported a few smaller hitches but no characteristic ~0.7 s freeze. The run included Witch Hill crossings, NPC schedules, spawned bats/pathfinding, tool work, combat, crafting, vendor interaction, and teleports. However GK Frame Spike Probe 0.4.0 was accidentally absent: BepInEx loaded exactly these eight ordinary plugins and no probe. Therefore this run is useful negative user-observation evidence but cannot quantitatively classify its smaller hitches or provide a probe-confirmed upper bound.
+
+Interpretation: do not repeat immediately; test complementary B2 first. If B2 is positive, the sufficient owner set is narrowed there and B1 need not be repeated for the current binary search. If B2 is also negative, repeat B1 with the probe before inferring cross-group interaction.
+
+## Split B2 — complementary seven-plugin subgroup
+
+Enabled ordinary plugins:
 
 - Configuration Manager 18.4.1
 - The Merchant's Promise 1.0.0
@@ -117,10 +125,42 @@ Keep these complementary seven disabled for this run:
 - No Intros! 2.2.11
 - Rain & Wind Volume Controls 1.1.0
 
-`Max Buttons Redux` remains out of this split because it was not present in the successful Split-B reproduction.
+Plus GK Frame Spike Probe 0.4.0.
+
+Result: **positive**; characteristic freeze reproduced almost immediately.
+
+Direct capture:
+
+- `FRAME SPIKE #1`
+- wall: **687.15 ms**
+- Unity-main-thread CPU: **671.88 ms**
+- CPU share: **97.8%**
+- `gc_cycle_delta=0`
+- `incremental_pending=True`
+- managed heap: **565.1 MB**
+- focused, `timeScale=1`
+
+The probe was correctly loaded, and the user immediately identified the event as the characteristic freeze. It occurred only seconds into steady-state gameplay. The nearby ordinary FlowCanvas/NPC schedule activity is not assigned ownership from log adjacency.
+
+Interpretation: the target class is reproducible using B2 alone. B1 is not necessary for this reproduction. The upstream owner or sufficient interaction is now narrowed from 15 ordinary plugins to these seven B2 plugins.
+
+## Next split: C1
+
+Test the three gameplay-data/logic mods together, plus GK Frame Spike Probe 0.4.0:
+
+- The Merchant's Promise 1.0.0
+- Food & Drink Rebalance 1.2.0
+- Better Save Soul Rebalance 1.1.1
+
+Keep disabled for this run:
+
+- Configuration Manager 18.4.1
+- New Game at Bottom! 2.2.11
+- No Intros! 2.2.11
+- Rain & Wind Volume Controls 1.1.0
 
 Decision rule:
 
-- If B1 reproduces the characteristic class, split these eight again.
-- If B1 does not reproduce after a comparable ordinary gameplay interval, test the complementary seven as B2.
-- If neither subgroup reproduces alone, investigate an interaction between B1 and B2 rather than declaring all members clean.
+- If C1 reproduces, narrow inside these three.
+- If C1 is negative after a comparable ordinary interval, test the complementary four as C2.
+- Do not infer guilt from the function/name of any individual plugin before that split is resolved and its current repository/source has been inspected.
